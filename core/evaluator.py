@@ -23,6 +23,7 @@ class Evaluator:
         self.base_color_cast = self.compute_color_cast(self.original_img)
         self.base_snr = self.compute_snr(self.gray_original)
         self.base_hf_ratio = self.compute_high_freq_ratio(self.gray_original)
+        self.base_contrast = self.compute_contrast(self.gray_original)
         
         self.brisque_obj = cv2.quality.QualityBRISQUE.create(
             "brisque_model_live.yml", 
@@ -30,22 +31,26 @@ class Evaluator:
         ) if hasattr(cv2, "quality") else None
 
         self.base_brisque = self.compute_brisque(self.original_img)
-        self.base_brightness = float(np.mean(self.gray_original))
+        self.base_brightness = self.compute_brightness(self.gray_original)
 
         self.profile_dict = self._generate_profile()
 
     def _to_gray(self, img: np.ndarray) -> np.ndarray:
         """安全地将图像转换为灰度图。"""
         if len(img.shape) == 3:
-            # 假设输入为 BGR 格式 (OpenCV 默认)
+            # 假设输入为 BGR 格式
             return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         return img
 
     def _align_images(self, img1: np.ndarray, img2: np.ndarray) -> np.ndarray:
         """防御性编程：确保评估时图像尺寸一致，防止 Agent 改变了输出尺寸导致报错。"""
-        if img1.shape != img2.shape:
+        if img1.shape[:2] != img2.shape[:2]:
             return cv2.resize(img2, (img1.shape[1], img1.shape[0]))
         return img2
+
+    def compute_brightness(self, img: np.ndarray) -> float:
+        gray = self._to_gray(img)
+        return float(np.mean(gray))
 
     def compute_sharpness(self, img: np.ndarray) -> float:
         """
@@ -66,6 +71,36 @@ class Evaluator:
         # data_range=255 适用于 8-bit 图像
         score, _ = ssim(self.gray_original, gray, full=True, data_range=255)
         return score
+    
+    def compute_mse(self, img: np.ndarray) -> float:
+        """
+        [新增] 计算均方误差 (MSE)。
+        用于严格限制像素级别的改变。值越小，与原图越接近。
+        """
+        gray = self._to_gray(img)
+        gray = self._align_images(self.gray_original, gray)
+        # 转换为 float64 防止溢出
+        mse = np.mean((self.gray_original.astype(np.float64) - gray.astype(np.float64)) ** 2)
+        return float(mse)
+
+    def compute_color_shift(self, img: np.ndarray) -> float:
+        """
+        [新增] 感知色差偏移量计算。
+        将图像转换至 LAB 色彩空间计算欧氏距离，这比直接算 RGB 差异更能反映人类视觉对色偏的感知。
+        值越低代表偏色越少。
+        """
+        if len(img.shape) != 3 or len(self.original_img.shape) != 3:
+            return 0.0  # 如果有灰度图，跳过色彩偏移检查
+            
+        img_aligned = self._align_images(self.original_img, img)
+        
+        # LAB 空间计算距离更符合人类感官
+        lab_orig = cv2.cvtColor(self.original_img, cv2.COLOR_BGR2LAB).astype(np.float32)
+        lab_new = cv2.cvtColor(img_aligned, cv2.COLOR_BGR2LAB).astype(np.float32)
+        
+        # 计算 L, A, B 三通道的欧氏距离
+        diff = np.sqrt(np.sum((lab_orig - lab_new) ** 2, axis=-1))
+        return float(np.mean(diff))
 
     def compute_tv(self, img: np.ndarray) -> float:
         """
@@ -110,10 +145,11 @@ class Evaluator:
         """
         无参考图像质量评估 (BRISQUE)。
         分数通常在 0-100 之间，分数越低代表图像感知质量越好（伪影和失真越少）。
+        此处取反，分数越高代表图像感知质量越好
         依赖 opencv-contrib-python。
         """
         if self.brisque_obj:
-            return self.brisque_obj.compute(img)[0]
+            return 100.0 - self.brisque_obj.compute(img)[0]
         else:
             return 50.0
         
@@ -128,6 +164,16 @@ class Evaluator:
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         s_channel = hsv[:, :, 1]
         return float(np.mean(s_channel))
+    
+    def compute_contrast(self, img: np.ndarray) -> float:
+        """
+        计算全局对比度：均方根对比度 (RMS Contrast)。
+        使用灰度图的像素标准差来衡量。值越大，代表对比度越高。
+        """
+        gray = self._to_gray(img).astype(np.float32)
+        # NumPy 的 std 函数直接计算标准差，完美对应 RMS 对比度
+        contrast = np.std(gray)
+        return float(contrast)
 
     def compute_color_cast(self, img: np.ndarray) -> dict:
         """
@@ -220,11 +266,11 @@ class Evaluator:
                     "std_dev": round(std_intensity, 2)
                 },
                 "sharpness": {
-                    "laplacian_variance": round(self.base_sharpness, 2)
+                    " laplacian_variance": round(self.base_sharpness, 2)
                 },
                 "quality_metrics": {
                     "information_entropy": round(self.base_entropy, 2),
-                    "brisque_score": round(self.base_brisque, 2),
+                    "100.0 - brisque_score": round(self.base_brisque, 2),
                     "clipping_ratio": round(self.base_clipping, 4)
                 },
                 "color_and_saturation": {
@@ -248,63 +294,3 @@ class Evaluator:
     
     def get_profile_yaml(self) -> str:
         return yaml.dump(self.profile_dict, indent=2, allow_unicode=True)
-
-    def get_reward_score(self, processed_img: np.ndarray, task_weights: dict[str, float] | None = None) -> float:
-        """
-        综合计算 Reward 分数，供 Optuna 优化使用。
-        """
-        # 1. 计算三大核心指标
-        processed_gray = self._to_gray(processed_img)
-
-        if task_weights is None:
-            task_weights = {
-                "sharpness": 1.0, 
-                "tv": -0.5, 
-                "entropy": 0.0, 
-                "brightness": 0.0
-            }
-
-        # 1. 计算当前处理图的指标
-        cur_sharpness = self.compute_sharpness(processed_gray)
-        cur_tv = self.compute_tv(processed_gray)
-        cur_entropy = self.compute_entropy(processed_gray)
-        cur_brightness = float(np.mean(processed_gray))
-        cur_brisque = self.compute_brisque(processed_img)
-        cur_clipping = self.compute_clipping(processed_gray)
-        cur_saturation = self.compute_saturation_metrics(processed_img)
-        cur_snr = self.compute_snr(processed_gray)
-        cur_hf_ratio = self.compute_high_freq_ratio(processed_gray)
-        
-        fidelity = self.compute_fidelity(processed_gray)
-
-        # 2. 硬性约束拦截 (Early Pruning)
-        if fidelity < 0.7:
-            return -9999.0 
-        
-        # 截断惩罚：如果处理后出现了大量死黑/死白（例如激增了 5%），直接毙掉
-        if (cur_clipping - self.base_clipping) > 0.05:
-            return -9999.0
-
-        # 3. 计算相对变化向量 (Deltas)
-        # 使用相对变化量保证各指标在同一数量级
-        deltas = {
-            "sharpness": (cur_sharpness - self.base_sharpness) / (self.base_sharpness + 1e-6),
-            "tv": (cur_tv - self.base_tv) / (self.base_tv + 1e-6),
-            "entropy": (cur_entropy - self.base_entropy) / (self.base_entropy + 1e-6),
-            "brightness": (cur_brightness - self.base_brightness) / (self.base_brightness + 1e-6),
-            "saturation": (cur_saturation - self.base_saturation) / (self.base_saturation + 1e-6),
-            "snr": (cur_snr - self.base_snr) / (self.base_snr + 1e-6),
-            "hf_ratio": (cur_hf_ratio - self.base_hf_ratio) / (self.base_hf_ratio + 1e-6)
-        }
-
-        # 4. 任务权重矩阵点积
-        reward = sum(task_weights.get(k, 0) * deltas.get(k, 0) for k in deltas.keys())
-
-        # 5. 应用自然度惩罚 (BRISQUE)
-        # BRISQUE 越小越好。如果处理后分数变大（恶化），则根据恶化程度施加惩罚
-        brisque_degradation = max(0, cur_brisque - self.base_brisque)
-        brisque_penalty = brisque_degradation * 0.1  # 惩罚系数可调
-        
-        final_score = (reward - brisque_penalty) * fidelity
-
-        return float(final_score)
