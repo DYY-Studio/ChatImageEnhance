@@ -49,14 +49,14 @@ class CoderAgent(BaseAgent):
 
 ### Task / 任务目标
 1.  **解析需求**：理解用户想要达到的视觉效果（如“去噪”、“增强对比度”、“二值化”等）。
-2.  **构建管线**：根据用户提供的客观图像评价指标，正确分析图像问题，从 `cv_wrappers` 提供的 JSON Schema 中选择合适的算子。
+2.  **构建管线**：从 `cv_wrappers` 提供的 Schema 中选择合适的算子。
 3.  **定义搜索空间**：使用 `trial.suggest_int`, `trial.suggest_float` 或 `trial.suggest_categorical` 为算子的每个参数定义合理的范围。
-4.  **合理约束**：避免使用过于极端的参数导致图像完全不可用。严禁使用没有明确方向，导致反复震荡的模棱两可的范围（如[-2.0, 2.0]）。
+4.  **合理约束**：避免使用过于极端的参数导致图像完全不可用。严禁使用没有明确方向，导致反复震荡的模棱两可的范围（如[-2.0, 2.0]）。如果一个参数没有调优的价值，允许使用常数来阻止Optuna调优。
 5.  **生成代码**：输出一段符合 Python 语法的完整 `process` 函数代码。
 
 ### Code Constraints / 代码约束
 * **函数签名**：必须严格为 `def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:`。
-* **参数采样**：必须使用 `trial` 对象获取参数。
+* **参数采样**：必须使用 `trial` 对象获取参数。**当且仅当** 一个参数没有调优的价值，允许使用常数来阻止Optuna调优。
     * 例如：`d = trial.suggest_int("Bilateral_Filter_d", 1, 9)`
     * 例如：`sigma_color = trial.suggest_float("Bilateral_Filter_sigma_color", 10.0, 150.0)`
     * 例如：`ksize_median = trial.suggest_categorical("Median_Denoise_ksize", [3, 5, 7])`
@@ -136,21 +136,22 @@ def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
     
     def generate_prompt(self, 
         user_intent: str = '', 
-        plan_steps: list = [], 
+        init_details: str = '', 
         previous_errors: str = None,
     ) -> str:
         user_prompt = ''
         if user_intent:
             user_prompt += f"用户图像增强需求：{user_intent}\n"
-        if plan_steps:
-            user_prompt += f"参考执行步骤：{plan_steps}\n"
+        if init_details:
+            user_prompt += f"原始图像量化信息：{init_details}\n"
         if previous_errors:
             user_prompt += f"上一轮代码执行错误信息：{previous_errors}\n请优先修复该错误再生成代码\n"
+        logger.info(f"注入提示词：\n{user_prompt}")
         return user_prompt
 
     def generate_code_stream(self, 
         user_intent: str = '', 
-        plan_steps: list = [], 
+        init_details: str = '', 
         previous_errors: str = None,
     ) -> Generator[tuple[str, str], None, None]:
         """
@@ -168,7 +169,7 @@ def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
         logger.info("开始调用LLM生成图像增强代码")
         llm_response = ''
         for t, chunk in self._call_llm_stream(self.generate_prompt(
-            user_intent, plan_steps, previous_errors
+            user_intent, init_details, previous_errors
         )):
             yield f'STREAM.{t}', chunk
             if t == "CONTENT":
@@ -204,17 +205,17 @@ def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
         logger.info(f"成功生成代码：\n{code}")
         return code
 
-    def execute(self, user_intent: str = '', plan_steps: list = [], previous_errors: str = None) -> str:
+    def execute(self, user_intent: str = '', init_details: str = '', previous_errors: str = None) -> str:
         """
         实现父类BaseAgent的抽象execute方法，作为Agent对外的统一执行入口
         
         :param user_intent: 用户的图像增强意图
-        :param plan_steps: 规划步骤（占位参数，兼容未来扩展）
+        :param init_details: 初始化基础量化信息
         :param previous_errors: 历史执行错误信息（用于代码修复）
         :return: 最终生成的可执行Python代码字符串
         """
         try:
-            return self.generate_code(user_intent, plan_steps, previous_errors)
+            return self.generate_code(user_intent, init_details, previous_errors)
         except Exception as e:
             logger.error(f"CoderAgent执行失败：{str(e)}", exc_info=True)
             raise RuntimeError(f"编码Agent生成代码失败：{str(e)}") from e
@@ -222,7 +223,7 @@ def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
     def execute_stream(
         self, 
         user_intent: str = '', 
-        plan_steps: list = [], 
+        init_details: str = '', 
         previous_errors: str = None
     ) -> Generator[tuple[str, str], None, None]:
         """
@@ -231,7 +232,7 @@ def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
         :return FINISH: 返回清理后的代码
         """
         try:
-            for t, chunk in self.generate_code_stream(user_intent, plan_steps, previous_errors):
+            for t, chunk in self.generate_code_stream(user_intent, init_details, previous_errors):
                 yield t, chunk
         except Exception as e:
             logger.error(f"CoderAgent执行失败：{str(e)}", exc_info=True)

@@ -10,6 +10,7 @@ from queue import Queue
 
 from core.orchestrator import Orchestrator
 from agents.coder import CoderAgent
+from agents.evaluator import EvaluatorAgent
 from components.optuna_callbacks import StOptunaCallback, StOptunaCallbackImg
 
 st.set_page_config(
@@ -116,11 +117,21 @@ if st.button("🚀 启动自动增强", type="primary", disabled=not selected_mo
         st.warning("未选择使用的模型")
         st.stop()
     
-    orch = Orchestrator(CoderAgent(get_openai_client(st.session_state.api_url, st.session_state.api_key), model_name=selected_model))
+    client = get_openai_client(st.session_state.api_url, st.session_state.api_key)
+    orch = Orchestrator(
+        CoderAgent(
+            client, selected_model
+        ),
+        EvaluatorAgent(
+            client, selected_model
+        )
+    )
 
     with (main_status := st.status("运行中...", expanded=True)):
-        with (init_status := st.status("💿 流程初始化", state="running")):
-            st.text("对输入的原始图像进行必要的计算")
+        # with (init_status := st.status("💿 流程初始化", state="running")):
+        #     st.text("对输入的原始图像进行必要的计算")
+        with (eva_status := st.status("📝 LLM 生成评价策略", state="error")):
+            eva_message = st.chat_message('assistant')
         with (llm_status := st.status("🧠 LLM 生成增强策略", state="error")):
             chat_message = st.chat_message('assistant')
         with (optuna_status := st.status("🔬 Optuna 贝叶斯优化", state="error")):
@@ -131,7 +142,6 @@ if st.button("🚀 启动自动增强", type="primary", disabled=not selected_mo
             with data_tab: table_placeholder = st.empty()
 
         best_queue = Queue()
-        # callback = StOptunaCallback(n_trials, progress_bar, status_text, table_placeholder)
         callback = StOptunaCallbackImg(n_trials, progress_bar, status_text, table_placeholder, best_img, best_queue)
 
         best_bgr, best_params, log = None, None, None
@@ -141,18 +151,40 @@ if st.button("🚀 启动自动增强", type="primary", disabled=not selected_mo
         #     n_trials=n_trials,
         #     callbacks=[callback]
         # )
+        evaluate_code_str = ''
+        def eva_stream_wrapper():
+            global eva_status, evaluate_code_str
+            for t, body in orch.prepare_stream(
+                image=img_bgr,
+                user_prompt=final_prompt,
+            ):
+                if t == "CODE_EVALUATE.START":
+                    eva_status.update(state="running")
+                elif t == "CODE_EVALUATE.REASONING":
+                    yield body
+                elif t == "CODE_EVALUATE.STREAM":
+                    yield body
+                elif t == "CODE_EVALUATE.END":
+                    pass
+                elif t == "FINISH":
+                    eva_status.update(state="complete")
+                    evaluate_code_str = body
+        
+        eva_message.write_stream(eva_stream_wrapper())
+
         def stream_wrapper():
-            global best_bgr, best_params, log, llm_status, optuna_status, init_status
+            global best_bgr, best_params, log, llm_status, optuna_status #, init_status
             for t, body in orch.process_stream(
                 image=img_bgr,
+                evaluate_code_str=evaluate_code_str,
                 best_queue=best_queue,
                 user_prompt=final_prompt,
                 n_trials=n_trials,
                 callbacks=[callback]
             ):
-                if t == "INIT.FINISH":
-                    init_status.update(state="complete")
-                elif t == "CODE.START":
+                # if t == "INIT.FINISH":
+                #     init_status.update(state="complete")
+                if t == "CODE.START":
                     llm_status.update(state="running")
                 elif t == "CODE.REASONING":
                     yield body

@@ -3,7 +3,6 @@ import numpy as np
 import logging
 
 from sandbox.executor import SandboxExecutor
-from core.evaluator import Evaluator
 from typing import Iterable, Callable
 from queue import Queue
 
@@ -13,12 +12,12 @@ class BayesianOptimizer:
     """
     在 LLM 确定代码结构后，接管底层参数寻优。
     """
-    def __init__(self, executor: SandboxExecutor, evaluator: Evaluator):
+    def __init__(self, executor: SandboxExecutor):
         self.executor = executor
-        self.evaluator = evaluator
 
     def run_inner_loop(self, 
         code_str: str, 
+        evaluate_code_str: str,
         base_img: np.ndarray, 
         n_trials: int = 30, 
         callbacks: Iterable[Callable[[optuna.study.Study, optuna.trial.FrozenTrial], None]] | None = None
@@ -31,13 +30,15 @@ class BayesianOptimizer:
         def objective(trial):
             try:
                 result_img = self.executor.execute_pipeline(code_str, base_img, trial)
-                score = self.evaluator.get_reward_score(result_img) 
+                score = self.executor.execute_evaluate(evaluate_code_str, result_img, base_img)
                 
-                if score <= -9999.0: 
+                if score <= -5000.0: 
                     raise optuna.TrialPruned()
                 return score
+            except optuna.TrialPruned:
+                pass
             except Exception as e:
-                logger.error(e)
+                logger.error("CODE EXEC ERROR", e)
                 raise optuna.TrialPruned() # 代码执行错误，修剪该 trial
 
         study = optuna.create_study(direction="maximize")
@@ -58,6 +59,7 @@ class BayesianOptimizer:
 
     def run_inner_loop_stream(self, 
         code_str: str, 
+        evaluate_code_str: str,
         base_img: np.ndarray, 
         best_queue: Queue,
         n_trials: int = 30, 
@@ -71,7 +73,7 @@ class BayesianOptimizer:
         def objective(trial: optuna.trial.Trial):
             try:
                 result_img = self.executor.execute_pipeline(code_str, base_img, trial)
-                score = self.evaluator.get_reward_score(result_img) 
+                score = self.executor.execute_evaluate(evaluate_code_str, result_img, base_img)
                 
                 if score <= -9999.0: 
                     raise optuna.TrialPruned()
@@ -82,9 +84,11 @@ class BayesianOptimizer:
                 except:
                     pass
                 return score
+            except optuna.TrialPruned:
+                pass
             except Exception as e:
-                logger.error(e)
-                raise optuna.TrialPruned() # 代码执行错误，修剪该 trial
+                logger.error("CODE EXEC ERROR", e)
+                raise optuna.TrialPruned()  # 代码执行错误，修剪该 trial
 
         study = optuna.create_study(direction="maximize")
         study.optimize(objective, n_trials=n_trials, callbacks=callbacks)

@@ -2,10 +2,12 @@ import optuna
 import numpy as np
 import ast
 import cv2
+import math
 import inspect
 import skimage
 
 from tools import global_registry
+from core.evaluator import Evaluator
 from sandbox.code_checker import AgentCodeChecker, SecurityViolation
 from types import SimpleNamespace
 from typing import Callable
@@ -24,13 +26,23 @@ class SandboxExecutor:
             "print": print, 
             "float": float, 
             "int": int,
-            "str": str
+            "str": str,
+            "max": max,
+            "min": min,
+            "round": round,
+            "abs": abs
         },
-        "cv_wrappers": None
+        "Exception": Exception,
+        "math": math,
+        "cv_wrappers": None,
+        "vision_metrics": None
     }
 
     _func: Callable[[np.ndarray, optuna.Trial], np.ndarray] | None = None
     _code: int | None = None
+
+    _eva_func: Callable[[np.ndarray], float] | None = None
+    _eva_code: int | None = None
 
     def __init__(self, timeout_seconds: int = 5):
         self.timeout = timeout_seconds
@@ -52,6 +64,46 @@ class SandboxExecutor:
     @property
     def base_namespace(self):
         return SandboxExecutor.get_keys_iters(self._base_namespace)
+    
+    def prepare_evaluate_code(self, code_str: str, orig_img: np.ndarray) -> Evaluator:
+        exec_context = self._base_namespace.copy()
+
+        exec_context["vision_metrics"] = Evaluator(orig_img)
+
+        # 3. 动态执行
+        try:
+            # 安全检查
+            astree = ast.parse(code_str)
+            
+            checker = AgentCodeChecker()
+            checker.visit(astree)
+
+            exec(code_str, exec_context)
+
+             # 4. 检查是否存在process函数，提取并执行
+            process_func: Callable[[np.ndarray, optuna.Trial], np.ndarray] = exec_context.get("evaluate")
+
+            if not process_func:
+                raise ValueError("Agent 代码中未定义 evaluate 函数")
+            
+            sig = inspect.signature(process_func)
+            sig.bind(
+                np.random.randint(0, 256, (48, 64), dtype=np.uint8),
+            )
+            
+            self._eva_func = process_func
+            self._eva_code = hash(code_str)
+
+        except SecurityViolation as e:
+            raise
+        except TypeError as e:
+            raise
+        except SyntaxError as e:
+            raise
+        except Exception as e:
+            raise
+
+        return exec_context["vision_metrics"]
     
     def prepare_code(self, code_str: str):
         exec_context = self._base_namespace.copy()
@@ -90,13 +142,13 @@ class SandboxExecutor:
             self._code = hash(code_str)
 
         except SecurityViolation as e:
-            raise e
+            raise
         except TypeError as e:
-            raise e
+            raise
         except SyntaxError as e:
-            raise e
+            raise
         except Exception as e:
-            raise e
+            raise
 
     def execute_pipeline(self, code_str: str, img: np.ndarray, trial: optuna.Trial) -> np.ndarray | Exception:
         """
@@ -111,6 +163,20 @@ class SandboxExecutor:
             self.prepare_code(code_str)
 
         return self._func(img, trial)
+    
+    def execute_evaluate(self, code_str: str, img: np.ndarray, orig_img: None | np.ndarray = None) -> float:
+        """
+        使用 exec() 执行 code_str。
+
+        要求 code_str 必须定义了一个 evaluate(img: np.ndarray) -> nd.ndarray 函数。
+
+        返回处理后的图像。如果报错，抛出携带详细 Traceback 的异常供 LLM 修复。
+        """
+        # 创建一个命名空间，注册基础组件
+        if not self._eva_func or self._eva_code != hash(code_str):
+            self.prepare_evaluate_code(code_str, orig_img)
+
+        return self._eva_func(img)
     
     def execute_pipeline_direct(self, code_str: str, img: np.ndarray, params: dict) -> np.ndarray:
         """
