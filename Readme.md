@@ -2,25 +2,37 @@
 # 运行方法
 `streamlit run app.py`
 # 架构描述
-### 宏观微观双循环
 
-让大模型（LLM）负责它最擅长的**逻辑与结构（离散空间）**，让传统数学工具（Optuna）负责它最擅长的**数值调参（连续空间）**。
+## 三大Agent
+### InitEvaluatorAgent（备选）
+* 负责为用户的自然语言输入编写适当的初始评价参数，给后续过程作为参考
+  ```python
+  def init_evaluate(img: np.ndarray) -> str:
+    pass
+  ```
 
-整个系统只需要**一个大模型 Agent** 和**一个本地寻优引擎**，彻底抛弃复杂的 Agent 间对话。
+### EvaluatorAgent
+* 负责将用户的自然语言输入转换为评价代码用于本轮本地Optuna调优
+  ```python
+  def evaluate(img: np.ndarray) -> float:
+    pass
+  ```
 
-#### 1. 外循环 (Outer Loop) —— LLM 拓扑突变 (类似 autoresearch)
-* **动作**：LLM 编写完整的 Python 执行函数代码（process函数）
-* **频率**：低频。每当内循环遇到瓶颈时，LLM 才会被唤醒一次。
-* **原理**：利用 LLM 的先验知识（例如“边缘检测前最好先做高斯模糊”）和 `autoresearch` 的进化思想，随机或有逻辑地“变异”这个管线函数（比如：增加一个锐化节点，或者把均值滤波换成双边滤波）。
+### CoderAgent
+* 输入：自然语言输入，评价代码
+* 根据用户的自然语言输入，参考评价代码，编写可运行的图像处理管线函数
+  ```python
+  def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
+    pass
+  ```
 
-#### 2. 内循环 (Inner Loop) —— 本地贝叶斯优化 (Optuna)
-* **动作**：一旦 LLM 确定了执行函数，**断开与大模型的连接**。本地的 Optuna 接管系统。
-* **频率**：高频。在本地 CPU/GPU 上以毫秒级速度疯狂运行。
-* **原理**：Optuna 在这个固定的管线下，自动调节 `kernel_size`、`clipLimit` 等参数，快速迭代 30~50 次，找到这套管线下的**绝对最高分**。
-
-#### 3. 评估器 (The Evaluator) —— 唯一的判官
-* 这是一个纯 Python 编写的客观打分函数（清晰度、对比度、噪声评估）。内循环靠它指引参数收敛，外循环靠它决定这套管线是“保留 (Keep)”还是“丢弃 (Discard)”。
-* 保留了在此处追加多模态模型进行主观评判的可能性
+## 运行方式
+1. 用户输入图像和自然语言描述
+2. （如果有）InitEvaluatorAgent根据自然语言描述生成初始评价函数，指示原始图像的主要指标
+3. EvaluatorAgent根据用户的自然语言输入编写评价函数，指导本轮Optuna调优
+4. CoderAgent根据用户的自然语言输入、评价函数，编写主处理管线
+5. 用户检查结果是否符合预期，输入下一步操作的自然语言描述
+6. 回到第一步
 
 # 架构图
 ```plaintext
