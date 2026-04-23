@@ -83,6 +83,32 @@ global_registry.register(
     }
 )
 
+global_registry.register(
+    name="Laplacian_Sharpening",
+    func=safe_laplacian_sharpening,
+    description="二阶导数锐化算子。直接提取图像的细微纹理和高频边缘并叠加到原图，适合增强非常细微的细节。",
+    params_schema={
+        "scale": {
+            "type": "float",
+            "range": [0.1, 3.0],
+            "description": "细节叠加系数。值越大，高频细节越明显。默认 1.0。"
+        }
+    }
+)
+
+global_registry.register(
+    name="Kernel_Sharpening",
+    func=safe_kernel_sharpening,
+    description="基础空间滤波锐化。通过 3x3 卷积核增强中心像素与周围像素的对比度。计算速度极快。",
+    params_schema={
+        "intensity": {
+            "type": "float",
+            "range": [0.0, 2.0],
+            "description": "锐化结果的混合比例。1.0 为纯锐化结果，0.0 为原图，介于两者之间为平滑过渡。"
+        }
+    }
+)
+
 # 5. 自动 Canny 边缘检测注册
 global_registry.register(
     name="Auto_Canny",
@@ -595,17 +621,17 @@ global_registry.register(
     }
 )
 
-global_registry.register(
-    name="Unsupervised_Wiener_Deblur",
-    func=safe_unsupervised_wiener,
-    description="无监督维纳去模糊算子。能在尝试去除图像失焦模糊的同时，自动估算并抑制噪声，结果通常比纯锐化更柔和自然。",
-    params_schema={
-        "psf_size": {
-            "type": "int",
-            "options": [3, 5, 7, 9, 11, 13, 15],
-            "description": "模糊核大小(必须为奇数)。用于估测图像本身的模糊半径。值越大修复的模糊越严重，但也可能带来光晕效应。默认 5。"
-        }
-    }
-)
+# global_registry.register(
+#     name="Unsupervised_Wiener_Deblur",
+#     func=safe_unsupervised_wiener,
+#     description="无监督维纳去模糊算子。能在尝试去除图像失焦模糊的同时，自动估算并抑制噪声，结果通常比纯锐化更柔和自然。",
+#     params_schema={
+#         "psf_size": {
+#             "type": "int",
+#             "options": [3, 5, 7, 9, 11, 13, 15],
+#             "description": "模糊核大小(必须为奇数)。用于估测图像本身的模糊半径。值越大修复的模糊越严重，但也可能带来光晕效应。默认 5。"
+#         }
+#     }
+# )
 
 __all__ = ["global_registry"] # 向全局暴露该注册

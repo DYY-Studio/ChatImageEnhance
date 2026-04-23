@@ -123,6 +123,51 @@ def safe_unsharp_masking(img: np.ndarray, amount: float = 1.5, threshold: int = 
     except Exception as e:
         raise RuntimeError(f"Unsharp masking failed: {str(e)}")
     
+def safe_laplacian_sharpening(img: np.ndarray, scale: float = 1.0) -> np.ndarray:
+    """
+    拉普拉斯锐化 (Laplacian Sharpening)。
+    利用二阶导数提取图像边缘和高频细节，然后按比例叠加回原图中。
+    """
+    try:
+        if img is None: raise ValueError("Error: Input image is None")
+        
+        # 1. 计算拉普拉斯算子 (使用更高精度的 float32 避免溢出)
+        laplacian = cv2.Laplacian(img, cv2.CV_32F)
+        
+        # 2. 原图减去(或加上，取决于核的符号)二阶导数细节
+        # OpenCV 默认的 Laplacian 核中心为负，所以此处用减法
+        sharpened = img.astype(np.float32) - scale * laplacian
+        
+        # 3. 截断与转换
+        sharpened = np.clip(sharpened, 0, 255).astype(np.uint8)
+        return sharpened
+    except Exception as e:
+        raise RuntimeError(f"Laplacian sharpening failed: {str(e)}")
+    
+def safe_kernel_sharpening(img: np.ndarray, intensity: float = 1.0) -> np.ndarray:
+    """
+    自定义卷积核锐化 (Kernel Sharpening)。
+    使用经典的 3x3 高通滤波掩膜直接对图像进行空间滤波计算。
+    """
+    try:
+        if img is None: raise ValueError("Error: Input image is None")
+        
+        # 1. 定义经典的中心增强卷积核 (总和为1，保证整体亮度不剧变)
+        kernel = np.array([[0, -1, 0], 
+                           [-1, 5, -1], 
+                           [0, -1, 0]], dtype=np.float32)
+        
+        # 2. 进行二维卷积
+        sharpened = cv2.filter2D(img, -1, kernel)
+        
+        # 3. 如果强度不是 1.0，则与原图进行线性混合以控制锐化程度
+        if intensity != 1.0:
+            sharpened = cv2.addWeighted(sharpened, intensity, img, 1.0 - intensity, 0)
+            
+        return np.clip(sharpened, 0, 255).astype(np.uint8)
+    except Exception as e:
+        raise RuntimeError(f"Kernel sharpening failed: {str(e)}")
+    
 def safe_auto_canny(img: np.ndarray, sigma: float = 0.33) -> np.ndarray:
     """
     自动 Canny 边缘检测。
