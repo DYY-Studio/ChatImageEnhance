@@ -29,44 +29,33 @@ class EvaluatorAgent(BaseAgent):
 
 绝对不要假设存在其他未列出的第三方库，也不要使用其他标准库。
 
-`vision_metrics` 实例包含以下方法：
-1. 客观质量指标：
-   - `vision_metrics.compute_snr(img: np.ndarray) -> float`: 计算信噪比，值越大噪点越少。
-   - `vision_metrics.compute_sharpness(img: np.ndarray) -> float`: 拉普拉斯方差，计算清晰度/边缘锐度，值越大越锐利。
-   - `vision_metrics.compute_contrast(img: np.ndarray) -> float`: 计算对比度。
-   - `vision_metrics.compute_brightness(img: np.ndarray) -> float`: 计算平均亮度 (0-255)。
-   - `vision_metrics.compute_saturation_metrics(img: np.ndarray) -> float`: 计算平均色彩饱和度。
-   - `vision_metrics.compute_entropy(img: np.ndarray) -> float`：计算图像信息熵。用于衡量图像信息的丰富度，过暗、过曝或低对比度图像熵值通常较低。
-   - `vision_metrics.compute_tv(img: np.ndarray) -> float`: 计算全变分，量化噪点和过度锐化的粗糙感，已经进行尺寸归一化，确保不同分辨率的图像处于同一量级。
+`vision_metrics` 实例已经预先计算了原始图像的必要质量指标，
+提供以下方法，均接受一个 img: np.ndarray 参数，返回float：
+1. 客观质量指标百分比变化量 
+   - 变化量计算公式：5.0 - math.tanh(((传入图像指标 - 原始图像指标) / 原始图像指标 + 1e-4) / 5.0)：
+   - `vision_metrics.compare_snr(img)`: 信噪比。**>0 画面更干净（噪点相对减少），<0 噪点更明显**。降噪任务的核心**奖励项**。
+   - `vision_metrics.compare_sharpness(img)`: 拉普拉斯方差，**>0 边缘更锐利，<0 变模糊**。提升清晰度时奖励正值，但极高的正值可能意味着出现了严重噪点。
+   - `vision_metrics.compare_contrast(img)`: 计算对比度。**>0 对比度升高（更通透），<0 对比度降低（更灰白）**。根据用户要求决定奖惩。
+   - `vision_metrics.compare_brightness(img)`: **>0 变亮，<0 变暗**。根据用户需求（提亮/压暗）决定奖惩。
+   - `vision_metrics.compare_saturation(img)`: 平均色彩饱和度。**>0 变鲜艳，<0 变灰暗**。根据用户是否要求调整色彩进行加权。
+   - `vision_metrics.compare_entropy(img)`：图像信息熵。**>0 细节增加，<0 细节丢失**。通常作为**奖励项**，防止图像因过度调整变成色块或纯色。
+   - `vision_metrics.compare_tv(img)`: 全变分，**>0 画面变粗糙，<0 画面变平滑**。通常作为**惩罚项**，用于抑制过度锐化和噪点爆发。
+   - `vision_metrics.compare_clipping(img)`: 死白/死黑溢出率，**>0 曝光严重失真**（纯黑纯白出现/增加）。**必须作为严厉的惩罚项**，只要 >0 就给予极大的负权重。
+   - `vision_metrics.compare_high_freq_ratio(img)`: 高频能量占比。**>0 细节/噪点增多，<0 画面被平滑/涂抹**。需结合 `compare_snr` 使用：高频上升且信噪比下降，通常代表噪点爆炸。
 
-   - `vision_metrics.compute_fidelity(img: np.ndarray) -> float`: SSIM，返回0.0到1.0，1代表结构完全一致。
-   - `vision_metrics.compute_mse(img: np.ndarray) -> float:` 均方误差。
-   - `vision_metrics.compute_color_shift(img: np.ndarray) -> float`: 计算整体LAB色彩偏移量(欧氏距离)。
+2. 有参考客观质量指标：
+   - `vision_metrics.compute_fidelity(img)`: SSIM，返回0.0到1.0，1代表结构完全一致。
+   - `vision_metrics.compute_mse(img):` 均方误差。
+   - `vision_metrics.compute_color_shift(img)`: 计算整体LAB色彩偏移量(欧氏距离)。
 
-2. 无参考感知指标：
-   - `vision_metrics.compute_brisque(img: np.ndarray) -> float`: 综合自然图像质量评分 (注意：已在底层取反处理，值越大代表人类观感越好，0到100)。
-
-`vision_metrics` 实例包含以下字段：
-1. 预计算的原始图像客观质量指标：
-   - `vision_metrics.base_sharpness`
-   - `vision_metrics.base_tv`
-   - `vision_metrics.base_entropy`
-   - `vision_metrics.base_clipping`
-   - `vision_metrics.base_saturation`
-   - `vision_metrics.base_snr`
-   - `vision_metrics.base_hf_ratio`
-   - `vision_metrics.base_contrast`
-
-2. 保留的原始图像：
-   - `vision_metrics.original_img`：原始图像
-   - `vision_metrics.gray_original`：预先将原始图像转换为灰度图像
+3. 无参考感知指标变化量：
+   - `vision_metrics.compare_brisque(img)`: 综合自然图像质量评分 (注意：已在底层取反处理)，**>0 视觉观感更好，<0 伪影增多**。强大的全局质量**奖励项**，能够有效防止图像修改过度。
 
 # 设计原则与约束 (CRITICAL RULES)
-1. **防范奖励黑客 (Prevent Reward Hacking):** Optuna 极其聪明，如果你只奖励清晰度，它会将图像锐化成全是白噪点。你**必须**使用多维度加权，并引入惩罚机制（Penalty）。例如，在追求高锐度时，必须扣除低 SNR（高噪点）的惩罚分。
-2. **目标最大化 (Always Maximize):** 返回的 `float` 分数越高，代表图像越符合用户需求。
-3. **鲁棒性 (Robustness):** 函数内部必须包含 `try...except` 块。如果计算过程中发生任何异常（如图像全黑导致除以零），请返回一个极低的分数（如 -9999.0），以告诉 Optuna 这是一个失败的尝试。
-4. **归一化考量:** 尽量让各项指标的分数在相似的量级上进行加权相加，防止某一指标绝对数值过大而淹没其他指标。
-5. **变化考量:** 对于客观质量指标，可多使用相对原始图像的变化率保证图像修改方向符合要求
+1. **意图翻译** (Extract & Translate)：提取用户的核心需求，映射为1个或多个 **主奖励项**（例如：要求“更清晰” -> 奖励 `compare_shapness`）。
+2. **防范奖励黑客 (Prevent Reward Hacking):** Optuna 极其聪明，如果你只奖励清晰度，它会将图像锐化成全是白噪点。你**必须**使用多维度加权，并引入惩罚机制（Penalty）。例如，锐化必定带来噪点，因此奖励 `compare_shapness` 的同时，必须适度惩罚 `compare_tv` 的上升，并严厉惩罚 `compare_clipping`。
+3. **目标最大化 (Always Maximize):** 将各项得分乘以你认为合理的权重并求和，返回一个 `float`。Optuna 将以最大化该返回值为目标。
+4. **鲁棒性 (Robustness):** 函数内部必须包含 `try...except` 块。如果计算过程中发生任何异常（如图像全黑导致除以零），请返回一个极低的分数（如 -9999.0），以告诉 Optuna 这是一个失败的尝试。
 
 # 输出规范
 - 你只需输出 **纯 Python 代码**。
@@ -75,35 +64,66 @@ class EvaluatorAgent(BaseAgent):
 - 函数的签名必须严格为：`def evaluate(img: np.ndarray) -> float:`
 
 # 示例 (Few-Shot Example)
-用户输入："请帮我去除照片里的噪点，但一定要保留衣服的纹理细节。"
-你的输出：
+## 示例 1：清晰度增强（平衡锐化与噪点，守住色彩与结构底线）
+**用户要求：** “帮我把图片变清晰一点，但是尽量不要引入太多粗糙的噪点，一定要保持原图色彩不变。”
+**你的代码输出：**
+```python
 def evaluate(img: np.ndarray) -> float:
     try:
-        # 1. 核心目标：提高信噪比 (降噪)
-        new_snr = vision_metrics.compute_snr(img)
-        snr_improvement = new_snr - vision_metrics.base_snr
+        score = 0.0
         
-        # 2. 保真度约束：必须保留纹理细节
-        # SSIM 非常适合用来惩罚过度磨皮导致的结构丢失
-        ssim_score = vision_metrics.compute_fidelity(img)
+        # 1. 核心奖励项：满足“变清晰”的核心需求
+        score += 1.5 * vision_metrics.compare_shapness(img) 
         
-        # 3. 颜色防偏移约束
+        # 2. 相对惩罚项：满足“不要引入粗糙噪点” (TV上升代表变粗糙)
+        tv_change = vision_metrics.compare_tv(img)
+        if tv_change > 0:
+            score -= 2.0 * tv_change  # 严厉惩罚粗糙度上升
+            
+        # 3. 绝对约束项：满足“保持原图色彩不变”
         color_shift = vision_metrics.compute_color_shift(img)
+        score -= 0.1 * color_shift  # LAB距离可能在 1-20 之间，需匹配量级
         
-        # 构建惩罚项
-        structure_penalty = 0.0
-        # 如果 SSIM 低于 0.85，说明画面结构被严重破坏，给予严厉惩罚
-        if ssim_score < 0.85:
-            structure_penalty = (0.85 - ssim_score) * 500.0
+        # 4. 底线安全项：防止画面语义崩溃
+        fidelity = vision_metrics.compute_fidelity(img)
+        if fidelity < 0.8:
+            score -= (0.8 - fidelity) * 10.0  # SSIM低于0.8时断崖式惩罚
             
-        color_penalty = color_shift * 2.0
-            
-        # 目标函数：奖励信噪比提升，但以保持结构相似度和颜色一致为前提
-        total_score = (snr_improvement * 5.0) - structure_penalty - color_penalty
-        
-        return float(total_score)
-    except Exception:
+        return score
+    except:
         return -9999.0
+```
+
+## 示例 2：纯净度提升（降噪处理，防止画面糊成一团）
+
+**用户要求**： “这张图背景很脏，帮我降噪处理，但是别把细节涂抹得太厉害，别改变整体亮度。”
+**你的代码输出**：
+```
+def evaluate(img: np.ndarray) -> float:
+    try:
+        score = 0.0
+        
+        # 1. 核心奖励项：降噪 (信噪比SNR提升，自然度BRISQUE提升)
+        score += 1.0 * vision_metrics.compare_snr(img)
+        score += 0.5 * vision_metrics.compare_brisque(img)
+        
+        # 2. 相对惩罚项：防止“改变亮度”和“过度涂抹细节”
+        # 亮度变化偏离 0 越远，惩罚越重
+        score -= 2.0 * abs(vision_metrics.compare_brightness(img))
+        
+        # 信息熵(细节)下降越快，惩罚越重
+        entropy_change = vision_metrics.compare_entropy(img)
+        if entropy_change < 0:
+            score -= 1.5 * abs(entropy_change)
+            
+        # 3. 绝对约束项：利用SSIM和MSE锁定整体相似度，防止图被彻底毁坏
+        score += 1.0 * vision_metrics.compute_fidelity(img)
+        score -= 0.001 * vision_metrics.compute_mse(img)
+        
+        return score
+    except:
+        return -9999.0
+```
     """.strip()
 
     def _extract_code_block(self, llm_response: str) -> str:
