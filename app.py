@@ -87,12 +87,12 @@ with st.sidebar:
     with s2c1: pass
     with s2c2:
         n_trials = st.slider("优化轮数", 5, 60, 15)
-        # mode = st.selectbox("增强目标", [
-        #     "自动增强", "清晰锐化", "低光增强", "去雾", "色彩饱和", "自定义"
-        # ])
         mode = st.selectbox("增强目标", [
-            "清晰锐化"
+            "自动增强", "清晰锐化", "低光增强", "去雾", "色彩饱和", "自定义"
         ], key="mode")
+        # mode = st.selectbox("增强目标", [
+        #     "清晰锐化"
+        # ], key="mode")
         prompt = st.text_area("自定义描述", disabled = False if st.session_state['mode'] == "自定义" else True)
 
 final_prompt = prompt if mode == "自定义" else mode
