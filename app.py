@@ -1,16 +1,19 @@
 import streamlit as st
 import cv2
 import numpy as np
-from pathlib import Path
 import tempfile
+import pandas
 
 from openai import OpenAI
 from typing import Generator
 from queue import Queue
+from pathlib import Path
 
 from core.orchestrator import Orchestrator
+from core.evaluator import Evaluator
 from agents.coder import CoderAgent
 from agents.evaluator import EvaluatorAgent
+from agents.planner import PlannerAgent
 from components.optuna_callbacks import StOptunaCallback, StOptunaCallbackImg
 
 st.set_page_config(
@@ -104,6 +107,52 @@ if upload:
     img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
     st.subheader("原图")
     st.image(img_bgr, width="stretch", channels="BGR")
+
+with st.popover("🔎 图像问题分析", type="primary", disabled=not selected_model):
+    input_image = st.checkbox("同时发送图像给LLM（仅当你选用的模型有视觉能力时勾选！）")
+    analyze_btn = st.button("开始分析", disabled=upload is None)
+
+if analyze_btn:
+    with (plan_status := st.status("🔎 LLM 图像分析", state="error")):
+        client = get_openai_client(st.session_state.api_url, st.session_state.api_key)
+        planner = PlannerAgent(
+            client, selected_model
+        )
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        evaluator = Evaluator(img_bgr)
+
+        with st.expander("查看客观指标"):
+            st.json(evaluator.get_profile_json())
+
+        with (output_status := st.status("查看输出过程", state="error")):
+            plan_message = st.chat_message('assistant')
+
+        analyze_result = {}
+
+        def plan_stream_wrapper():
+            global plan_status, analyze_result
+            plan_status.update(state="running")
+            output_status.update(state="running")
+            for t, body in planner.execute_stream(evaluator.get_profile_yaml(), img_rgb):
+                if t == "STREAM.REASONING":
+                    yield body
+                elif t == "STREAM.CONTENT":
+                    yield body
+                elif t == "FINISH":
+                    analyze_result = body
+                    output_status.update(state="complete")
+
+        plan_message.write_stream(plan_stream_wrapper())
+
+        st.table({
+            "1": ["整体分析", "推荐提示词"],
+            "2": [analyze_result.pop('diagnosis_summary'), analyze_result.pop('enhancement_prompt')]
+        }, hide_header=True)
+
+        st.table(pandas.DataFrame(analyze_result['identified_issues']))
+
+        plan_status.update(state="complete")
+        
 
 if st.button("🚀 启动自动增强", type="primary", disabled=not selected_model):
     if not upload or not final_prompt:
