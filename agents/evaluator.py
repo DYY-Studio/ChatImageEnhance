@@ -60,7 +60,7 @@ class EvaluatorAgent(BaseAgent):
 # 输出规范
 - 你只需输出 **纯 Python 代码**。
 - 关键库/实例已经处在 `globals` 中，代码中不要包含 `import` 语句，不要定义全局变量。
-- 必须以标准 Markdown 包裹代码段，以 "```python" 并以 "```" 结尾。
+- 必须以标准 Markdown 包裹代码段，以 "```python" 开头并以 "```" 结尾。
 - 函数的签名必须严格为：`def evaluate(img: np.ndarray) -> float:`
 
 # 示例 (Few-Shot Example)
