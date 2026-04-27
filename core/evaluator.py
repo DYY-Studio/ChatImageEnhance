@@ -290,8 +290,8 @@ class Evaluator:
         gray = self.gray_original
         
         # 亮度和对比度计算
-        mean_intensity = float(np.mean(gray))
-        std_intensity = float(np.std(gray))
+        mean_intensity = self.base_brightness
+        std_intensity = self.base_contrast
         
         # 极暗/过曝像素比例计算 (转化为百分比)
         dark_ratio = float(np.mean(gray < 15)) * 100
@@ -323,7 +323,6 @@ class Evaluator:
                 },
                 "color_and_saturation": {
                     "mean_saturation": round(self.base_saturation, 2),
-                    # "channel_means": self.base_color_cast
                 },
                 "frequency_and_noise": {
                     "estimated_snr_db": round(self.base_snr, 2),
