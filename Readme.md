@@ -4,12 +4,8 @@
 # 架构描述
 
 ## 三大Agent
-### InitEvaluatorAgent（备选）
-* 负责为用户的自然语言输入编写适当的初始评价参数，给后续过程作为参考
-  ```python
-  def init_evaluate(img: np.ndarray) -> str:
-    pass
-  ```
+### PlannerAgent
+* （视觉模型）负责根据图像内容和客观量化参数分析图像存在的问题，并给用户给出推荐的优化方向和建议提示词
 
 ### EvaluatorAgent
 * 负责将用户的自然语言输入转换为评价代码用于本轮本地Optuna调优
@@ -38,28 +34,37 @@
 ```plaintext
 AutoImageEnhance/
 ├── app.py                      # 负责前端交互 (Streamlit UI或其他) 
-├── main_cli.py                 # 纯命令行入口 (方便后期自动化测试)
+│
+├── main_cli.py                 # 纯命令行入口 (占位，目前没有计划)
+│
 ├── core/                       # 核心业务逻辑层
 │   ├── __init__.py
 │   ├── orchestrator.py         # 主控调度器：管理 LLM 与 Optuna 的双循环机制
 │   ├── evaluator.py            # 图像质量评估器：定义奖励函数
 │   └── optimizer.py            # 贝叶斯优化器：封装 Optuna 逻辑
+│
 ├── agents/                     # 大模型 Agent 层
 │   ├── __init__.py
 │   ├── base_agent.py           # 基础 Agent 类 (封装 LLM API 调用)
-│   ├── planner.py              # 规划者：理解需求，选择合适算子（占位，目前不使用）
-│   └── coder.py                # 编码者：将规划转化为带有 Optuna trial 的 Python 代码
+│   ├── planner.py              # 规划者：分析图像，给出图像可改进的内容，并给用户推荐提示词
+│   ├── evaluator.py            # 评估者：将提示词转化为适用于 Optuna Study 的奖励函数
+│   └── coder.py                # 编码者：将提示词转化为带有 Optuna trial 的 Python 代码
+│
 ├── tools/                      # 传统计算机视觉库
 │   ├── __init__.py             # 全局算子注册
 │   ├── cv_wrappers.py          # 经过防呆处理的 OpenCV 封装函数库
+│   ├── skimage_wrappers.py     # 经过防呆处理的 scikit-image 封装函数库
 │   └── registry.py             # 算子注册表：动态将 cv_wrappers 导出为 LLM 可读的 JSON Schema
+│
 ├── sandbox/                    # 运行时与沙盒环境
 │   ├── __init__.py
 │   ├── code_checker.py         # AST代码安全检查
 │   └── executor.py             # 动态代码安全执行器 (负责 exec 运行 LLM 生成的代码)
+│
 ├── memory/                     # 记忆与经验库
 │   ├── __init__.py
 │   └── experience_db.py        # 封装 ChromaDB，存储成功案例
+│
 └── requirements.txt            # 项目依赖
 ```
 
