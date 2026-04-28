@@ -79,7 +79,7 @@ class Evaluator:
         值越大，代表图像高频边缘信息越丰富。
         """
         gray = self._to_gray(img)
-        return cv2.Laplacian(gray, cv2.CV_64F).var()
+        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
     
     def compare_sharpness(self, img: np.ndarray) -> float:
         return self._compute_diff(self.compute_sharpness, img, self.base_sharpness)
