@@ -122,13 +122,12 @@ def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
         code_pattern = re.compile(r'```python\s*(.*?)\s*```', re.DOTALL)
         match = code_pattern.search(llm_response)
         
+        func_pattern = re.compile(r'(def\s+process\s*\(\s*img(?:\s*:\s*[\w\.]+)?\s*,\s*trial(?:\s*:\s*[\w\.]+)?\)(?:\s*->\s*[\w\.]+)?\s*:(?:\n\s+.+)+)', re.DOTALL)
+
+        match = func_pattern.search(llm_response if not match else match.group(1).strip())
         if not match:
-            # 兜底匹配：无markdown格式时直接提取process函数
-            func_pattern = re.compile(r'def process\(img.*?, *trial.*?\):\s*(.*?)(?=\ndef|\n$)', re.DOTALL)
-            match = func_pattern.search(llm_response)
-            if not match:
-                logger.error(f"无法从LLM回复中提取代码块，原始回复：{llm_response}")
-                raise RuntimeError("LLM回复未包含合法的process函数代码块")
+            logger.error(f"无法从LLM回复中提取代码块，原始回复：{llm_response}")
+            raise RuntimeError("LLM回复未包含合法的process函数代码块")
         
         code = match.group(1).strip()
         logger.info("成功从LLM回复中提取process函数代码")
@@ -141,7 +140,7 @@ def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
     ) -> str:
         user_prompt = ''
         if user_intent:
-            user_prompt += f"用户图像增强需求：{user_intent}\n"
+            user_prompt += f"{user_intent}"
         if init_details:
             user_prompt += f"原始图像量化信息：{init_details}\n"
         if previous_errors:
