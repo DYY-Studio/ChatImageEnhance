@@ -123,6 +123,51 @@ def safe_unsharp_masking(img: np.ndarray, amount: float = 1.5, threshold: int = 
     except Exception as e:
         raise RuntimeError(f"Unsharp masking failed: {str(e)}")
     
+def safe_laplacian_sharpening(img: np.ndarray, scale: float = 1.0) -> np.ndarray:
+    """
+    拉普拉斯锐化 (Laplacian Sharpening)。
+    利用二阶导数提取图像边缘和高频细节，然后按比例叠加回原图中。
+    """
+    try:
+        if img is None: raise ValueError("Error: Input image is None")
+        
+        # 1. 计算拉普拉斯算子 (使用更高精度的 float32 避免溢出)
+        laplacian = cv2.Laplacian(img, cv2.CV_32F)
+        
+        # 2. 原图减去(或加上，取决于核的符号)二阶导数细节
+        # OpenCV 默认的 Laplacian 核中心为负，所以此处用减法
+        sharpened = img.astype(np.float32) - scale * laplacian
+        
+        # 3. 截断与转换
+        sharpened = np.clip(sharpened, 0, 255).astype(np.uint8)
+        return sharpened
+    except Exception as e:
+        raise RuntimeError(f"Laplacian sharpening failed: {str(e)}")
+    
+def safe_kernel_sharpening(img: np.ndarray, intensity: float = 1.0) -> np.ndarray:
+    """
+    自定义卷积核锐化 (Kernel Sharpening)。
+    使用经典的 3x3 高通滤波掩膜直接对图像进行空间滤波计算。
+    """
+    try:
+        if img is None: raise ValueError("Error: Input image is None")
+        
+        # 1. 定义经典的中心增强卷积核 (总和为1，保证整体亮度不剧变)
+        kernel = np.array([[0, -1, 0], 
+                           [-1, 5, -1], 
+                           [0, -1, 0]], dtype=np.float32)
+        
+        # 2. 进行二维卷积
+        sharpened = cv2.filter2D(img, -1, kernel)
+        
+        # 3. 如果强度不是 1.0，则与原图进行线性混合以控制锐化程度
+        if intensity != 1.0:
+            sharpened = cv2.addWeighted(sharpened, intensity, img, 1.0 - intensity, 0)
+            
+        return np.clip(sharpened, 0, 255).astype(np.uint8)
+    except Exception as e:
+        raise RuntimeError(f"Kernel sharpening failed: {str(e)}")
+    
 def safe_auto_canny(img: np.ndarray, sigma: float = 0.33) -> np.ndarray:
     """
     自动 Canny 边缘检测。
@@ -517,24 +562,44 @@ def safe_vibrance(img: np.ndarray, amount: int = 0):
     try:
         if img is None: raise ValueError("Error: Input image is None")
 
-        if len(img.shape) != 3: return img.copy() # 灰度图跳过
-        if amount == 0: return img.copy()
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+        if len(img.shape) < 3 or img.shape[2] < 3: 
+            return img.copy() 
+            
+        if amount == 0: 
+            return img.copy()
+
+        # 3. 分离 Alpha 通道 (如果存在)
+        has_alpha = img.shape[2] == 4
+        if has_alpha:
+            bgr = img[:, :, :3]
+            alpha = img[:, :, 3]
+        else:
+            bgr = img
+
+        # 4. 转换至 HSV 空间进行处理
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
         h, s, v = cv2.split(hsv)
         
-        # 计算平均饱和度，作为调整参考
-        # 只针对饱和度低于平均值的区域进行较大幅度的提升
+        # 5. 计算自然饱和度 Mask
+        # 逻辑：逐像素计算。原本饱和度越低 (s越小)，mask 值越接近 1，增加的幅度越大；
+        # 原本饱和度越高 (s接近255)，mask 值越接近 0，起到保护作用，防止溢出。
         vibrance_mask = 1.0 - (s / 255.0) 
         s += amount * vibrance_mask
         
+        # 6. 限制范围并转回 uint8
         s = np.clip(s, 0, 255).astype(np.uint8)
         h = h.astype(np.uint8)
-        s = s.astype(np.uint8)
         v = v.astype(np.uint8)
         
-        # 4. 合并并转回 BGR
+        # 7. 合并通道并转回 BGR
         hsv_final = cv2.merge((h, s, v))
-        return cv2.cvtColor(hsv_final, cv2.COLOR_HSV2BGR)
+        bgr_final = cv2.cvtColor(hsv_final, cv2.COLOR_HSV2BGR)
+
+        # 8. 恢复 Alpha 通道
+        if has_alpha:
+            return cv2.merge((bgr_final, alpha))
+        
+        return bgr_final
     except Exception as e:
         raise RuntimeError(f"Vibrance adjustment failed: {str(e)}")
 

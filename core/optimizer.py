@@ -82,7 +82,7 @@ class BayesianOptimizer:
                     if score > study.best_value:
                         best_queue.put(result_img)
                 except:
-                    pass
+                    best_queue.put(result_img)
                 return score
             except optuna.TrialPruned:
                 pass

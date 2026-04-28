@@ -112,10 +112,10 @@ class Orchestrator:
 
         for attempt in range(self.max_llm_retries):
             yield "CODE.START", None
-            for t, chunk in self.coder.execute_stream(user_prompt, self.evaluator.get_profile_yaml(), error_log):
+            for t, chunk in self.coder.execute_stream(user_prompt, "", error_log):
                 if t == "FINISH":
                     code_str = chunk
-                    yield "CODE.END", None
+                    yield "CODE.END", chunk
                 elif t == "STREAM.CONTENT":
                     yield "CODE.STREAM", chunk
                 elif t == "STREAM.REASONING":
