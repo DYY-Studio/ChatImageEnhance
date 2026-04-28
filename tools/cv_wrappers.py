@@ -562,24 +562,44 @@ def safe_vibrance(img: np.ndarray, amount: int = 0):
     try:
         if img is None: raise ValueError("Error: Input image is None")
 
-        if len(img.shape) != 3: return img.copy() # 灰度图跳过
-        if amount == 0: return img.copy()
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+        if len(img.shape) < 3 or img.shape[2] < 3: 
+            return img.copy() 
+            
+        if amount == 0: 
+            return img.copy()
+
+        # 3. 分离 Alpha 通道 (如果存在)
+        has_alpha = img.shape[2] == 4
+        if has_alpha:
+            bgr = img[:, :, :3]
+            alpha = img[:, :, 3]
+        else:
+            bgr = img
+
+        # 4. 转换至 HSV 空间进行处理
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
         h, s, v = cv2.split(hsv)
         
-        # 计算平均饱和度，作为调整参考
-        # 只针对饱和度低于平均值的区域进行较大幅度的提升
+        # 5. 计算自然饱和度 Mask
+        # 逻辑：逐像素计算。原本饱和度越低 (s越小)，mask 值越接近 1，增加的幅度越大；
+        # 原本饱和度越高 (s接近255)，mask 值越接近 0，起到保护作用，防止溢出。
         vibrance_mask = 1.0 - (s / 255.0) 
         s += amount * vibrance_mask
         
+        # 6. 限制范围并转回 uint8
         s = np.clip(s, 0, 255).astype(np.uint8)
         h = h.astype(np.uint8)
-        s = s.astype(np.uint8)
         v = v.astype(np.uint8)
         
-        # 4. 合并并转回 BGR
+        # 7. 合并通道并转回 BGR
         hsv_final = cv2.merge((h, s, v))
-        return cv2.cvtColor(hsv_final, cv2.COLOR_HSV2BGR)
+        bgr_final = cv2.cvtColor(hsv_final, cv2.COLOR_HSV2BGR)
+
+        # 8. 恢复 Alpha 通道
+        if has_alpha:
+            return cv2.merge((bgr_final, alpha))
+        
+        return bgr_final
     except Exception as e:
         raise RuntimeError(f"Vibrance adjustment failed: {str(e)}")
 
