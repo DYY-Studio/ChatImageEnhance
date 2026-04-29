@@ -86,11 +86,18 @@ with st.sidebar:
         fetch_button = st.button("获取模型列表", disabled = True if not api_url else False, width="stretch")
         if fetch_button:
             get_models()
+        
+        # 添加无模型选项用于测试
+        model_options = ["🚫 无模型 (测试模式)"] + (st.session_state.models or [])
         selected_model = st.selectbox(
             "模型", 
-            options = st.session_state.models,
-            index = 0 if st.session_state.models else None
+            options = model_options,
+            index = 0
         )
+        
+        # 如果选择了无模型选项，将selected_model设为None
+        if selected_model == "🚫 无模型 (测试模式)":
+            selected_model = None
     
     st.header("处理设置")
     s2c1, s2c2 = st.columns([0.001, 0.999])
@@ -127,7 +134,31 @@ for i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if "image" in msg:
-            st.image(msg["image"], channels="BGR", caption="此轮优化结果")
+            # 查找上一轮的图像（如果存在）
+            prev_image = None
+            if i > 0:
+                # 向前查找最近一个包含图像的assistant消息
+                for j in range(i - 1, -1, -1):
+                    prev_msg = st.session_state.messages[j]
+                    if prev_msg["role"] == "assistant" and "image" in prev_msg:
+                        prev_image = prev_msg["image"]
+                        break
+            
+            # 根据是否有上一轮图像，决定显示方式
+            if prev_image is not None:
+                # 并排显示上一轮和这一轮的优化结果
+                c1, c2 = st.columns(2)
+                with c1: 
+                    st.image(prev_image, caption="上一轮优化结果", channels="BGR")
+                with c2: 
+                    st.image(msg["image"], caption="这一轮优化结果", channels="BGR")
+            else:
+                # 第一轮优化，只显示原图和当前结果
+                c1, c2 = st.columns(2)
+                with c1: 
+                    st.image(img_bgr, caption="原图", channels="BGR")
+                with c2: 
+                    st.image(msg["image"], caption="此轮优化结果", channels="BGR")
 
             with st.expander("🛠️ 查看此轮生成的代码与最优参数"):
                 with st.expander("评价逻辑 (Evaluation Code)"):
@@ -152,10 +183,10 @@ for i, msg in enumerate(st.session_state.messages):
 
 user_feedback = st.chat_input(
     '描述你的增强要求或对上轮结果的反馈\n（例如："这张图有些模糊，给我锐化一下" 或 "这版锐化过度了，稍微柔和一点"）', 
-    disabled=not selected_model
+    disabled=not upload
 )
 
-if upload and selected_model:
+if upload:
     if not st.session_state['messages']:
         if st.button("💡 不知如何描述？让 AI 分析", key="ai_planner_btn", use_container_width=True):
             # 1. 模拟用户发起了分析请求
@@ -211,13 +242,17 @@ if user_feedback:
     if not upload:
         st.warning("请先上传图片")
         st.stop()
-    if not api_url:
+    
+    # 如果选择了模型但没有配置API URL，则警告
+    if selected_model and not api_url:
         st.warning("请输入API URL")
         st.stop()
-    if not selected_model:
-        st.warning("未选择使用的模型")
-        st.stop()
-
+    
+    # 如果选择了模型但未实际选择（即不是测试模式），则警告
+    if selected_model is None and "messages" in st.session_state and len(st.session_state.messages) > 0:
+        # 已经有历史记录说明之前用过模型，现在切换到无模型模式需要提示
+        pass  # 允许在测试模式下继续
+    
     # 1. 记录人类用户的输入
     st.session_state.messages.append({"role": "user", "content": user_feedback})
     with st.chat_message("user"):
@@ -254,6 +289,29 @@ if user_feedback:
         else:
             current_iter_prompt += f"--- 用户要求 ---\n{user_feedback}"
         # ==========================================
+
+        # 检查是否为无模型测试模式
+        if not selected_model:
+            st.info("🧪 当前处于【无模型测试模式】，直接返回原图。")
+            
+            # 直接使用原图作为"增强结果"
+            best_bgr = img_bgr.copy()
+            best_params = {"mode": "test_no_llm", "info": "无模型测试模式，未进行任何处理"}
+            
+            # 更新会话状态
+            st.session_state['best_bgr'] = best_bgr
+            
+            # 将系统的回应和新图像记入历史记录
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": "✅ 【测试模式】已返回原图。请选择一个有效的模型以启用真正的 AI 图像增强功能。",
+                "image": best_bgr,
+                "eval_code": "# 无模型测试模式，未生成评价代码",
+                "process_code": "# 无模型测试模式，未生成处理代码",
+                "best_params": best_params
+            })
+            
+            st.rerun()
 
         client = get_openai_client(st.session_state.api_url, st.session_state.api_key, st.session_state.proxy_url)
         orch = Orchestrator(
