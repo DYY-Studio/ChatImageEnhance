@@ -123,13 +123,18 @@ if 'best_bgr' not in st.session_state:
 if upload:
     evaluator = Evaluator(img_bgr)
     if st.session_state['best_bgr'] is not None:
-        st.subheader("当前优化进度")
-        c1, c2 = st.columns(2)
-        with c1: st.image(img_bgr, caption="原图", channels="BGR")
-        with c2: st.image(st.session_state['best_bgr'], caption="当前最新增强结果", channels="BGR")
+        st.subheader("📊 当前优化进度")
+        from components.optuna_callbacks import create_image_comparison_widget
+        create_image_comparison_widget(
+            img_bgr, 
+            st.session_state['best_bgr'],
+            "原始图片",
+            "最新增强结果",
+            unique_key_prefix=f"top_progress_{id(st.session_state['best_bgr'])}"
+        )
         st.divider()
     else:
-        st.subheader("原图")
+        st.subheader("📷 原图")
         st.image(img_bgr, width="stretch", channels="BGR")
 
 
@@ -138,7 +143,32 @@ for i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if "image" in msg:
-            st.image(msg["image"], channels="BGR", caption="此轮优化结果")
+            # 如果有上一轮结果或原图，提供对比选项
+            if i > 0 and st.session_state.messages[i-1].get("image") is not None:
+                prev_img = st.session_state.messages[i-1]["image"]
+                st.markdown(f"**第 {i+1} 轮优化结果**")
+                from components.optuna_callbacks import create_image_comparison_widget
+                create_image_comparison_widget(
+                    prev_img, 
+                    msg["image"],
+                    f"第 {i} 轮结果",
+                    f"第 {i+1} 轮结果",
+                    unique_key_prefix=f"history_round_{i}_{id(msg['image'])}"
+                )
+            elif upload:
+                # 第一轮与原图对比
+                st.markdown("**第 1 轮优化结果**")
+                from components.optuna_callbacks import create_image_comparison_widget
+                create_image_comparison_widget(
+                    img_bgr, 
+                    msg["image"],
+                    "原始图片",
+                    "第 1 轮增强结果",
+                    unique_key_prefix=f"first_round_{i}_{id(msg['image'])}"
+                )
+            else:
+                # 没有对比对象时单独显示
+                st.image(msg["image"], channels="BGR", caption="此轮优化结果")
 
             with st.expander("🛠️ 查看此轮生成的代码与最优参数"):
                 with st.expander("评价逻辑 (Evaluation Code)"):
@@ -212,7 +242,7 @@ if upload and selected_model:
                         for issue in analyze_result['identified_issues']:
                             response_text += f"| {issue.get('issue_type', '未知')} | {issue.get('severity', '未知')} | {issue.get('evidence')}\n"
                     
-                    response_text += f"\n**✨ 推荐增强提示词：**\n```text\n{suggestion}\n```\n"
+                    response_text += f"\n**✨ 推荐增强提示词：**\n``text\n{suggestion}\n```\n"
                     response_text += "\n*💡 您可以直接复制上面的提示词发送给我，或在此基础上做出一定的调整*"
                     
                     # 渲染到界面并存入历史记录
