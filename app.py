@@ -110,6 +110,7 @@ if 'best_bgr' not in st.session_state:
 
 # 如果有历史结果，并在界面顶部展示原图与当前最佳进度的对比
 if upload:
+    evaluator = Evaluator(img_bgr)
     if st.session_state['best_bgr'] is not None:
         st.subheader("当前优化进度")
         c1, c2 = st.columns(2)
@@ -159,14 +160,15 @@ if upload and selected_model:
         if st.button("💡 不知如何描述？让 AI 分析", key="ai_planner_btn", use_container_width=True):
             # 1. 模拟用户发起了分析请求
             st.session_state.messages.append({"role": "user", "content": "请帮我分析这张图像的问题，并给出增强建议。"})
-            
+            with st.chat_message("user"):
+                st.markdown("请帮我分析这张图像的问题，并给出增强建议。")
+
             # 2. 立即触发 AI 分析流
             with st.chat_message("assistant"):
                 with st.status("🔎 AI 正在分析图像客观指标与视觉问题...", expanded=True) as plan_status:
                     client = get_openai_client(st.session_state.api_url, st.session_state.api_key, st.session_state.proxy_url)
                     planner = PlannerAgent(client, selected_model)
                     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-                    evaluator = Evaluator(img_bgr)
                     
                     analyze_result = {}
                     plan_placeholder = st.empty()
