@@ -6,12 +6,14 @@ import base64
 import io
 import numpy as np
 import openai
+import ast
 
 from PIL import Image
 from typing import Any, Optional, Generator
 
 # 配置简单的日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("BaseAgent")
 
 class BaseAgent:
     """
@@ -61,11 +63,17 @@ class BaseAgent:
                 "type": "text", 
                 "text": user_prompt
             })
-        
-        return [
+
+        prompts = [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": user_content},
+            {"role": "user", "content": [content for content in user_content if content['type'] == 'text']},
         ]
+
+        logger.info(json.dumps(
+            prompts, indent=2, ensure_ascii=False
+        ))
+        
+        return prompts
 
     def _call_llm(self, 
         user_prompt: str = '', 
@@ -163,6 +171,67 @@ class BaseAgent:
             else:
                 logging.error(f"无法在 LLM 回复中找到合法的 JSON 结构。\n回复原文:\n{text}")
                 return None
+            
+    def _extract_code(self, text: str, target_func_name: str):
+        """
+        通用代码提取器
+        :param text: LLM 返回的原始文本
+        :param target_func_name: 必须包含的目标函数名（如 "process" 或 "evaluate"）
+        """
+        
+        # 匹配 ```python, ```py, 或者纯 ```，忽略大小写
+        block_pattern = re.compile(r'```(?:python|py)?\s*(.*?)\s*```', re.DOTALL | re.IGNORECASE)
+        blocks = block_pattern.findall(text)
+    
+        # 如果有代码块，优先验证代码块
+        candidates = blocks if blocks else [text]
+        
+        for candidate in candidates:
+            candidate = candidate.strip()
+            if not candidate:
+                continue
+                
+            try:
+                # 尝试将其解析为抽象语法树 (AST)
+                tree = ast.parse(candidate)
+                # 遍历语法树，检查是否存在目标函数
+                has_target = any(
+                    isinstance(node, ast.FunctionDef) and node.name == target_func_name 
+                    for node in ast.walk(tree)
+                )
+                if has_target:
+                    logger.info(f"成功通过 AST 验证提取到包含 {target_func_name} 的代码块。")
+                    return candidate
+            except SyntaxError:
+                # 语法错误说明这个块不是有效的 Python 代码，跳过
+                continue
+
+        # 要么没写 ```，要么 ``` 里的代码有语法错误(大概率是混入了自然语言)
+        logger.warning("未能在标准 Markdown 块中找到合法代码，启动 AST 动态裁剪降级方案...")
+        
+        # 粗略定位到函数定义的位置
+        match = re.search(rf"(def\s+{target_func_name}\s*\(.*)", text, re.DOTALL)
+        if not match:
+            raise RuntimeError(f"LLM 回复中完全未找到名为 '{target_func_name}' 的函数定义。")
+            
+        raw_code_suffix = match.group(1)
+        lines = raw_code_suffix.split('\n')
+        
+        # 核心算法：从后往前逐行剥离底部的自然语言废话，直到代码能够成功被 AST 解析
+        for i in range(len(lines), 0, -1):
+            attempt_code = '\n'.join(lines[:i]).strip()
+            if not attempt_code:
+                continue
+            try:
+                # 只要能解析成功，说明截断的地方正好是合法的 Python 代码块末尾
+                ast.parse(attempt_code)
+                logger.info("AST 动态裁剪成功，已剔除末尾的自然语言。")
+                return attempt_code
+            except SyntaxError:
+                continue
+                
+        # 如果怎么裁都不行，抛出原始回复以便调试
+        raise RuntimeError(f"提取失败，代码包含无法修复的语法错误。\n原文片段: {raw_code_suffix[:200]}...")
 
     def execute(self, **kwargs) -> Any:
         """

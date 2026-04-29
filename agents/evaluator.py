@@ -135,19 +135,7 @@ def evaluate(img: np.ndarray) -> float:
         :raises RuntimeError: 无法从回复中提取合法代码块时抛出异常
         """
         # 正则匹配```python ... ```代码块
-        code_pattern = re.compile(r'```python\s*(.*?)\s*```', re.DOTALL)
-        match = code_pattern.search(llm_response)
-        
-        func_pattern = re.compile(r'(def\s+evaluate\s*\(\s*img(?:\s*:\s*[\w\.]+)?\s*\)(?:\s*->\s*[\w\.]+)?\s*:(?:\n\s+.+)+)', re.DOTALL)
-
-        match = func_pattern.search(llm_response if not match else match.group(1).strip())
-        if not match:
-            logger.error(f"无法从LLM回复中提取代码块，原始回复：{llm_response}")
-            raise RuntimeError("LLM回复未包含合法的evaluate函数代码块")
-        
-        code = match.group(1).strip()
-        logger.info("成功从LLM回复中提取evaluate函数代码")
-        return code
+        return self._extract_code(llm_response, "evaluate")
     
     def generate_code_stream(self, 
         user_intent: str = '', 
