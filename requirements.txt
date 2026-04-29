@@ -5,4 +5,5 @@ pillow
 openai
 pyyaml
 streamlit
+streamlit-local-storage
 scikit-image
