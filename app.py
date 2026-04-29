@@ -7,6 +7,7 @@ from openai import OpenAI, DefaultHttpxClient
 from typing import Generator
 from queue import Queue
 from pathlib import Path
+from streamlit_local_storage import LocalStorage
 
 from core.orchestrator import Orchestrator
 from core.evaluator import Evaluator
@@ -14,6 +15,8 @@ from agents.coder import CoderAgent
 from agents.evaluator import EvaluatorAgent
 from agents.planner import PlannerAgent
 from components.optuna_callbacks import StOptunaCallback, StOptunaCallbackImg
+
+localS = LocalStorage()
 
 st.set_page_config(
     page_title="ChatImageEnhance",
@@ -25,11 +28,13 @@ st.set_page_config(
 if 'models' not in st.session_state:
     st.session_state['models'] = []
 if 'api_url' not in st.session_state:
-    st.session_state['api_url'] = ""
+    st.session_state['api_url'] = localS.getItem('api_url') or ""
 if 'api_key' not in st.session_state:
-    st.session_state['api_key'] = ""
+    st.session_state['api_key'] = localS.getItem('api_key') or ""
 if 'has_api_key' not in st.session_state:
-    st.session_state['has_api_key'] = False
+    st.session_state['has_api_key'] = st.session_state.api_key != ""
+if 'proxy_url' not in st.session_state:
+    st.session_state['proxy_url'] = localS.getItem('proxy_url') or ""
 
 @st.cache_resource
 def get_openai_client(base_url: str, api_key: str, proxy_url: str):
@@ -96,6 +101,12 @@ with st.sidebar:
     s2c1, s2c2 = st.columns([0.001, 0.999])
     with s2c2:
         n_trials = st.slider("优化轮数", 5, 150, 15)
+
+    if fetch_button and st.session_state.models:
+        with st.container(height=1, border=False):
+            localS.setItem("api_url", api_url, "locals_api_url")
+            localS.setItem("api_key", api_key, "locals_api_key")
+            localS.setItem("proxy_url", proxy_url, "locals_proxy_url")
 
 upload = st.file_uploader("上传图像", ["png", "jpg", "jpeg"])
 
