@@ -554,7 +554,7 @@ def safe_hsv_saturation_nonlinear(img: np.ndarray, saturation_scale: float = 1.2
     except Exception as e:
         raise RuntimeError(f"Saturation Nonlinear adjustment failed: {str(e)}")
     
-def safe_vibrance(img: np.ndarray, amount: int = 0):
+def safe_vibrance(img: np.ndarray, amount: float = 0.5):
     """
     自然饱和度
     只增强那些饱和度原本较低的像素
@@ -568,7 +568,6 @@ def safe_vibrance(img: np.ndarray, amount: int = 0):
         if amount == 0: 
             return img.copy()
 
-        # 3. 分离 Alpha 通道 (如果存在)
         has_alpha = img.shape[2] == 4
         if has_alpha:
             bgr = img[:, :, :3]
@@ -576,26 +575,35 @@ def safe_vibrance(img: np.ndarray, amount: int = 0):
         else:
             bgr = img
 
-        # 4. 转换至 HSV 空间进行处理
+        # 将 amount 限制在常规区间并归一化为 [-1.0, 1.0] 比例
+        amt = np.clip(amount, -100, 100) / 100.0
+
+        # 转换至 HSV 空间进行处理
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
         h, s, v = cv2.split(hsv)
         
-        # 5. 计算自然饱和度 Mask
-        # 逻辑：逐像素计算。原本饱和度越低 (s越小)，mask 值越接近 1，增加的幅度越大；
-        # 原本饱和度越高 (s接近255)，mask 值越接近 0，起到保护作用，防止溢出。
-        vibrance_mask = 1.0 - (s / 255.0) 
-        s += amount * vibrance_mask
+        if amt > 0:
+            # 1. 自然饱和度 Mask (低饱和度=1，高饱和度=0)
+            vibrance_mask = 1.0 - (s / 255.0)
+            
+            # 2. 灰阶保护 Mask (让极低饱和度区域平滑过渡，防止 s=0 时的噪点染色)
+            gray_protect_mask = np.clip(s / 10.0, 0.0, 1.0)
+            
+            # 3. Soft-Clip 渐进增加 (核心修复)
+            s += (255.0 - s) * amt * vibrance_mask * gray_protect_mask
+            
+        else:
+            # 当降低饱和度时，直接按当前比例衰减，避免硬减导致大片死灰
+            s += s * amt
         
-        # 6. 限制范围并转回 uint8
+        # 由于我们使用了渐进式算法，这里的 np.clip 更多是作为浮点运算精度的最终兜底
         s = np.clip(s, 0, 255).astype(np.uint8)
         h = h.astype(np.uint8)
         v = v.astype(np.uint8)
         
-        # 7. 合并通道并转回 BGR
         hsv_final = cv2.merge((h, s, v))
         bgr_final = cv2.cvtColor(hsv_final, cv2.COLOR_HSV2BGR)
 
-        # 8. 恢复 Alpha 通道
         if has_alpha:
             return cv2.merge((bgr_final, alpha))
         
