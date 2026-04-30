@@ -66,11 +66,14 @@ class BaseAgent:
 
         prompts = [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": [content for content in user_content if content['type'] == 'text']},
+            {"role": "user", "content": user_content},
         ]
 
         logger.info(json.dumps(
-            prompts, indent=2, ensure_ascii=False
+            [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": [content for content in user_content if content['type'] == 'text']},
+            ], indent=2, ensure_ascii=False
         ))
         
         return prompts
