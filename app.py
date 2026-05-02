@@ -19,6 +19,7 @@ from agents.toolmaker import ToolMakerAgent
 
 from components.optuna_callbacks import StOptunaCallbackImg
 from components.tool_search import StSearch
+from components.llm_response_handler import StStreamResHandler
 
 localS = LocalStorage()
 
@@ -300,6 +301,7 @@ if user_feedback:
 
         with (main_status := st.status("🛠️ 根据反馈调整并运行...", expanded=True)):
             with (eva_status := st.status("📝 LLM 调整评价策略", state="error")):
+                eva_thinking_container = st.container(border=False)
                 eva_message = st.empty()
             with (llm_status := st.status("🧠 LLM 调整增强代码", state="error")):
                 chat_message = st.empty()
@@ -320,26 +322,37 @@ if user_feedback:
             callback = StOptunaCallbackImg(n_trials, progress_bar, status_text, table_placeholder, best_img, best_queue)
 
             best_bgr, best_params, log = None, None, None
-            evaluate_code_str = ''
 
-            # 执行 Evaluator 流
-            def eva_stream_wrapper():
-                global eva_status, evaluate_code_str
-                # 注意这里传入 current_iter_prompt
-                for t, body in orch.prepare_stream(image=img_bgr, user_prompt=current_iter_prompt):
-                    if t == "CODE_EVALUATE.START":
-                        eva_status.update(state="running")
-                    elif t == "CODE_EVALUATE.REASONING":
-                        yield body
-                    elif t == "CODE_EVALUATE.STREAM":
-                        yield body
-                    elif t == "CODE_EVALUATE.END":
-                        pass
-                    elif t == "FINISH":
-                        eva_status.update(state="complete")
-                        evaluate_code_str = body
-            
-            eva_message.write_stream(eva_stream_wrapper())
+            # evaluate_handler = StStreamResHandler(eva_status, eva_thinking_container)
+
+            evaluate_code_str = ''
+            evaluate_thinking_str = ''
+
+            evaluate_thinking_delta = None
+            evaluate_thinking_status = None
+
+            for t, body in orch.prepare_stream(image=img_bgr, user_prompt=current_iter_prompt):
+                if t == "CODE_EVALUATE.START":
+                    eva_status.update(state="running")
+                elif t == "CODE_EVALUATE.REASONING":
+                    if evaluate_thinking_delta is None:
+                        with eva_thinking_container:
+                            with (evaluate_thinking_status := st.status("思考中...", state="running")):
+                                evaluate_thinking_delta = st.empty()
+                                evaluate_thinking_status.update(state='running')
+                    evaluate_thinking_str += body
+                    evaluate_thinking_delta.markdown(evaluate_thinking_str, unsafe_allow_html=True)
+                elif t == "CODE_EVALUATE.STREAM":
+                    evaluate_code_str += body
+                    eva_message.markdown(evaluate_code_str, unsafe_allow_html=True)
+                    if evaluate_thinking_status and evaluate_thinking_status._current_state != 'complete':
+                        evaluate_thinking_status.update(label="显示思考", state='complete')
+                elif t == "CODE_EVALUATE.END":
+                    pass
+                elif t == "FINISH":
+                    eva_status.update(state="complete")
+                    evaluate_code_str = body
+                    eva_message.markdown(body, f"```python\n{evaluate_code_str}\n```")
 
             process_code_str = ""
 
