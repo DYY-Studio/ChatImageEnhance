@@ -104,6 +104,7 @@ with st.sidebar:
         )
 
     with st.expander("代码检索", expanded=True):
+        st.text("这是什么", help="缺少工具时，使用GitHub REST API检索相关的代码，需要填写Token才能使用")
         github_token = st.text_input("GitHub Token", type='password', key="github_token")
         search_steps_limit = st.slider(
             "搜索步骤数限制", 10, 100, 30, step=1, disabled=not github_token,
