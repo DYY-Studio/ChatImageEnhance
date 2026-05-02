@@ -3,25 +3,30 @@ import traceback
 import optuna
 
 from agents.evaluator import EvaluatorAgent
-from sandbox.executor import SandboxExecutor
 from agents.coder import CoderAgent
+from agents.searcher import SearcherAgent
+from agents.toolmaker import ToolMakerAgent
+
+from sandbox.executor import SandboxExecutor
 from core.optimizer import BayesianOptimizer
 # from core.evaluator import Evaluator
 
-from typing import Generator, Callable, Iterable, Literal, overload
+from typing import Generator, Callable, Iterable, Literal
 from queue import Queue
 
 class Orchestrator:
     """
     管理整个 State 流程与报错重试逻辑 (类似 LangGraph 的大脑)。
     """
-    def __init__(self, coder: CoderAgent, evaluator_agent: EvaluatorAgent, max_llm_retries: int = 3):
+    def __init__(self, coder: CoderAgent, evaluator_agent: EvaluatorAgent, toolmaker_agent: ToolMakerAgent, max_llm_retries: int = 3):
         # 初始化各个组件
         # self.planner = PlannerAgent(...)
         self.coder = coder
         self.executor = SandboxExecutor()
         self.evaluator_agent = evaluator_agent
+        self.toolmaker_agent = toolmaker_agent
         self.max_llm_retries = max_llm_retries
+        self.optimizer = None
 
     def verify_syntax(self, code_str: str):
         """语法验证"""
@@ -30,12 +35,58 @@ class Orchestrator:
         except Exception as e:
             return False, traceback.format_exc()
         return True, None
-    
+
+    def toolmaker_stream(self, tool_request: str, search_result: str = '') -> Generator[tuple[
+        Literal[
+            "CODE_TOOL.START", "CODE_TOOL.END", "CODE_TOOL.STREAM", 
+            "CODE_TOOL.REASONING", "FINISH", "ERROR_RETRY"
+        ], 
+        str | None
+    ], None, None]:
+        toolmaker_prompt = f"用户需求: \n{tool_request}"
+        if search_result:
+            toolmaker_prompt += f"\n检索结果: \n{search_result}"
+
+        error_log = None
+        code_str = ""
+        schema = {}
+
+        for attempt in range(self.max_llm_retries):
+            yield "CODE_TOOL.START", None
+            for t, chunk in self.toolmaker_agent.execute_stream(toolmaker_prompt, previous_errors=error_log):
+                if t == "FINISH":
+                    code_str = chunk['code']
+                    schema = chunk['schema']
+                    yield "CODE_TOOL.END", None
+                elif t == "STREAM.CONTENT":
+                    yield "CODE_TOOL.STREAM", chunk
+                elif t == "STREAM.REASONING":
+                    yield "CODE_TOOL.REASONING", chunk
+
+            try:
+                e = self.executor.test_generated_tools(code_str, schema['name'], schema)
+                if e is None:
+                    yield "FINISH", schema['name']
+                    break
+
+                toolmaker_prompt = code_str
+                error_log = str(e)
+
+                yield "ERROR_RETRY", error_log
+            except:
+                raise
+
+        yield "ERROR", error_log
+       
     def prepare_stream(self,
         image: np.ndarray, 
         user_prompt: str = '', 
     ) -> Generator[tuple[
-            str, str
+            Literal[
+                'CODE_EVALUATE.START', 'CODE_EVALUATE.END', 'CODE_EVALUATE.STREAM', 
+                'CODE_EVALUATE.REASONING', 'FINISH'
+            ], 
+            str | None
         ], None, None]:
         error_log = None
         code_str = ""
@@ -69,9 +120,20 @@ class Orchestrator:
         n_trials: int = 30,
         callbacks: Iterable[Callable[[optuna.study.Study, optuna.trial.FrozenTrial], None]] | None = None,
         error_log: str = ''
-    ) -> Generator[tuple[
-            str, 
-            str | tuple[np.ndarray, dict, str]
+    ) -> Generator[
+        tuple[
+            Literal[
+                "INIT.FINISH", 
+                "CODE.START", "CODE.REASONING", "CODE.END", "CODE.ERROR", 
+                'OPTUNA.START', 'OPTUNA.END'
+            ], 
+            str | None
+        ] | tuple[
+            Literal['FINISH'],
+            tuple[np.ndarray, dict, str]
+        ] | tuple[
+            Literal['TOOL_REQUEST'],
+            dict
         ], None, None]:
         """
         流式主处理流程
@@ -115,11 +177,16 @@ class Orchestrator:
             for t, chunk in self.coder.execute_stream(user_prompt, "", error_log):
                 if t == "FINISH":
                     code_str = chunk
-                    yield "CODE.END", chunk
+                    if isinstance(code_str, str):
+                        yield "CODE.END", chunk
                 elif t == "STREAM.CONTENT":
                     yield "CODE.STREAM", chunk
                 elif t == "STREAM.REASONING":
                     yield "CODE.REASONING", chunk
+
+            if isinstance(code_str, dict):
+                yield "TOOL_REQUEST", code_str
+                return
 
             # 尝试做一次空跑验证语法
             is_syntax_valid, error_log = self.verify_syntax(code_str)
