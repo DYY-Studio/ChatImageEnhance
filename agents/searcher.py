@@ -46,7 +46,7 @@ class SearcherAgent(BaseAgent):
                 }
                 for repo in self.github_client.search_repositories(query, 'stars', 'desc').get_page(0)
             ], allow_unicode=True, indent=2)
-            self.query_cache[query] = yaml_text
+            self.query_cache[query] = yaml_text if yaml_text != '[]' else 'No result(s)'
         return self.query_cache[query]
 
     def _get_repo_overview(self, repo_name: str) -> str:
@@ -67,7 +67,7 @@ class SearcherAgent(BaseAgent):
             ]
         }, allow_unicode=True, indent=2)
 
-    def _list_directory(self, repo_name: str, path: str) -> str:
+    def _list_directory(self, repo_name: str, path: str = "") -> str:
         if repo_name != self.curr_repo.full_name:
             self.curr_repo = self.github_client.get_repo(repo_name)
         files: list[ContentFile] = self.curr_repo.get_contents(path)
@@ -131,13 +131,13 @@ class SearcherAgent(BaseAgent):
 你必须严格按照逻辑顺序使用以下工具：
 1. `search_github_repos(query: str)`: 搜索相关仓库并返回 Top 10（按相关性排序）。
 2. `get_repo_overview(repo_name: str)`: 获取仓库的 README 摘要及根目录文件树。
-3. `list_directory(repo_name: str, path: str)`: 获取指定目录下的文件和子文件夹列表。
+3. `list_directory(repo_name: str, path: str = "")`: 获取指定目录下的文件和子文件夹列表，`path`为空字符串表示根目录。
 4. `read_file_content(repo_name: str, file_path: str, start_line: int = 0, end_line: int = -1)`: 读取指定代码文件的特定行数内容，`end_line`为-1表示读取到文件尾。
 5. `submit_findings(code_snippets: str = '', dependencies: str = '', summary: str = '')`: [终结动作] 当你找到了足够构建工具的代码或算法步骤，或者尝试了所有可能均宣告失败时，调用此工具结束任务。失败时不需要传入任何params。
 
 # Workflow (Drill-Down 策略)
 你必须遵循以下探索路径：
-1. **探索 (Search):** 使用 `search_github_repos` 寻找高相关仓库。
+1. **探索 (Search):** 使用 `search_github_repos` 寻找高相关仓库。GitHub REST API不是一般搜索引擎，仓库通常不会将所有关键字全部写在名称和介绍里，你应当选择最核心的进行搜索（如查找CRT风格化时，搜索`crt filter`而不是`crt filter image processing`等）。
 2. **侦察 (Recon):** 使用 `get_repo_overview` 查看仓库是否有价值。如果 README 描述不符，立即放弃并换一个仓库。
 3. **下钻 (Drill):** 观察文件树，使用 `list_directory` 进入包含核心源码的目录（通常是 `src`, `core`, 或直接在根目录下的核心 `.py`/`.js` 文件）。
 4. **提取 (Extract):** 使用 `read_file_content` 阅读目标文件。先阅读前 100 行（通常包含 import 和接口定义），确认是你要找的函数后，再精准拉取完整逻辑。
@@ -152,10 +152,18 @@ class SearcherAgent(BaseAgent):
 2. **过滤噪音:** 绝对不要进入或读取以下目录和文件：`tests/`, `docs/`, `assets/`, `images/`, `node_modules/`, `.git/`, 配置文件（如 `.gitignore`, `package-lock.json` 等）。只关注核心源码。
 3. **步数限制:** 你的探索必须高效。如果连续在 5 个不同的文件中都没有找到核心逻辑，必须立即放弃该仓库，去查看下一个仓库。
 4. **切勿生造代码:** 你的任务是“寻找和搬运”，**绝对不要**自己编写业务逻辑代码或杜撰算法步骤。如果没找到，直接提交“未找到”。
-5. **审查依赖:** 在阅读代码时，务必注意代码是否可以仅使用以下几个库实现（直接可运行或是适当改编后可运行）：`numpy` (作为 `np`), `cv2` (opencv-contrib-python), `skimage` (scikit-image), `scipy`, `math`，它们是后续 ToolMakerAgent 成功运行的关键。
-6. **错误处理:** 如果工具报告网络错误等你无法修复的错误，直接提交“未找到”，在 `summary` 字段中说明遭遇了错误。
+5. **审查依赖:** 在阅读代码时，务必注意代码是否可以仅使用以下几个库实现（直接可运行或是改编后可运行）：`numpy`, `cv2` (opencv-contrib-python), `skimage` (scikit-image), `scipy`, `math`，它们是后续 ToolMakerAgent 成功运行的关键。
+6. **跨语言参考:** **当且仅当** 多次尝试后依然无法找到完全匹配的代码（如：只有GLSL或其他语言而没有Python），允许对其他语言的仓库代码进行总结提炼。这种情况下，`code_snippets`提交的内容可以是原代码，也可以是伪代码或转写的Python。
+7. **错误处理:** 如果工具报告网络错误等你无法修复的错误，直接提交“未找到”，在 `summary` 字段中说明遭遇了错误。
 
-# Advanced Search
+# Search Guidance
+A query can contain any combination of search qualifiers supported on GitHub. The format of the search query is:
+`SEARCH_KEYWORD_1 SEARCH_KEYWORD_N QUALIFIER_1 QUALIFIER_N`
+
+You cannot use queries that:
+* Are longer than 256 characters (not including operators or qualifiers).
+* Have more than five AND, OR, or NOT operators.
+
 You can search for repositories on GitHub and narrow the results using these repository search qualifiers in any combination.
 Use quotations around multi-word search terms. For example, if you want to search for issues with the label "In progress," you'd search for `label:"in progress"`. Search is not case sensitive.
 
@@ -173,10 +181,10 @@ With the `in` qualifier you can restrict your search to the repository name, rep
 
 ## Search based on the contents of a repository
 
-You can find a repository by searching for content in the repository's README file using the `in:readme` qualifier. For more information, see [About the repository README file](/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes).
-Besides using `in:readme`, it's not possible to find repositories by searching for specific content within the repository. To search for a specific file or content within a repository, you can use the file finder or code-specific search qualifiers. For more information, see [Finding files on GitHub](/en/search-github/searching-on-github/finding-files-on-github) and [Understanding GitHub Code Search syntax](/en/search-github/github-code-search/understanding-github-code-search-syntax).
+You can find a repository by searching for content in the repository's README file using the `in:readme` qualifier.
+Besides using `in:readme`, it's not possible to find repositories by searching for specific content within the repository. To search for a specific file or content within a repository, you can use the file finder or code-specific search qualifiers.
 
-| Qualifier   | Example                                                                                                                                                                |
+| Qualifier | Example                                                                                                                                                                |
 | - | - |
 | `in:readme` | **octocat in:readme** matches repositories mentioning "octocat" in the repository's README file. |
 
@@ -184,7 +192,7 @@ Besides using `in:readme`, it's not possible to find repositories by searching f
 
 You can search repositories based on the language of the code in the repositories.
 
-| Qualifier                               | Example                                                                                                                                                                                  |
+| Qualifier | Example |
 | - | - |
 | <code>language:<em>LANGUAGE</em></code> | **`rails language:javascript`** matches repositories with the word "rails" that are written in JavaScript. |
 
