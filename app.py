@@ -151,15 +151,22 @@ if 'best_bgr' not in st.session_state:
 # 如果有历史结果，并在界面顶部展示原图与当前最佳进度的对比
 if upload:
     evaluator = Evaluator(img_bgr)
-    if st.session_state['best_bgr'] is not None:
-        st.subheader("当前优化进度")
-        c1, c2 = st.columns(2)
-        with c1: st.image(img_bgr, caption="原图", channels="BGR")
-        with c2: st.image(st.session_state['best_bgr'], caption="当前最新增强结果", channels="BGR")
-        st.divider()
-    else:
-        st.subheader("原图")
-        st.image(img_bgr, width="stretch", channels="BGR")
+    top_preview_placeholder = st.empty()
+    
+    def update_top_preview():
+        """用于局部刷新顶部图像预览的函数"""
+        with top_preview_placeholder.container():
+            if st.session_state['best_bgr'] is not None:
+                st.subheader("当前优化进度")
+                c1, c2 = st.columns(2)
+                with c1: st.image(img_bgr, caption="原图", channels="BGR")
+                with c2: st.image(st.session_state['best_bgr'], caption="当前最新增强结果", channels="BGR")
+                st.divider()
+            else:
+                st.subheader("原图")
+                st.image(img_bgr, width="stretch", channels="BGR")
+    
+    update_top_preview()
 else:
     st.session_state.messages.clear()
     st.session_state['best_bgr'] = None
@@ -169,33 +176,36 @@ def get_encoded_img(raw_array: np.ndarray):
     succ, enc_img = cv2.imencode('.png', raw_array, [cv2.IMWRITE_PNG_COMPRESSION, 2])
     return succ, enc_img.tobytes()
 
+def render_message_content(msg, index):
+    """提取内部渲染逻辑，供历史记录与最新消息复用"""
+    st.markdown(msg["content"])
+    if "image" in msg:
+        st.image(msg["image"], channels="BGR", caption="此轮优化结果")
+
+        with st.expander("🛠️ 查看此轮生成的代码与最优参数"):
+            with st.expander("评价逻辑 (Evaluation Code)"):
+                st.code(msg.get("eval_code", "# 无评价代码"), language="python")
+            
+            with st.expander("处理逻辑 (Process Code)"):
+                st.code(msg.get("process_code", "# 无处理代码"), language="python")
+            
+            with st.expander("Optuna 最优参数组合"):
+                st.json(msg.get("best_params", {}))
+        
+        succ, enc_img_bytes = get_encoded_img(msg["image"])
+        if succ:
+            st.download_button(
+                label="📥 保存此版本", 
+                data=enc_img_bytes, 
+                file_name=f"enhanced_history_{index}.png", 
+                mime="image/png", 
+                key=f"dl_history_{index}"
+            )
+
 # --- 渲染历史聊天记录 ---
 for i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        if "image" in msg:
-            st.image(msg["image"], channels="BGR", caption="此轮优化结果")
-
-            with st.expander("🛠️ 查看此轮生成的代码与最优参数"):
-                with st.expander("评价逻辑 (Evaluation Code)"):
-                    st.code(msg.get("eval_code", "# 无评价代码"), language="python")
-                
-                with st.expander("处理逻辑 (Process Code)"):
-                    st.code(msg.get("process_code", "# 无处理代码"), language="python")
-                
-                with st.expander("Optuna 最优参数组合"):
-                    st.json(msg.get("best_params", {}))
-            
-            # 从内存直接提供历史版本的下载
-            succ, enc_img_bytes = get_encoded_img(msg["image"])
-            if succ:
-                st.download_button(
-                    label="📥 保存此版本", 
-                    data=enc_img_bytes, 
-                    file_name=f"enhanced_history_{i}.png", 
-                    mime="image/png", 
-                    key=f"dl_history_{i}"
-                )
+        render_message_content(msg, i)
 
 user_feedback = st.chat_input(
     '描述你的增强要求或对上轮结果的反馈\n（例如："这张图有些模糊，给我锐化一下" 或 "这版锐化过度了，稍微柔和一点"）', 
@@ -252,9 +262,9 @@ if upload and selected_model:
                     response_text += "\n*💡 您可以直接复制上面的提示词发送给我，或在此基础上做出一定的调整*"
                     
                     # 渲染到界面并存入历史记录
-                    st.markdown(response_text)
-                    st.session_state.messages.append({"role": "assistant", "content": response_text})
-                    st.rerun()
+                    new_msg = {"role": "assistant", "content": response_text}
+                    st.session_state.messages.append(new_msg)
+                    render_message_content(new_msg, len(st.session_state.messages) - 1)
 
 if user_feedback:
     if not upload:
@@ -268,11 +278,12 @@ if user_feedback:
         st.stop()
 
     # 1. 记录人类用户的输入
-    st.session_state.messages.append({"role": "user", "content": user_feedback})
-    with st.chat_message("user"):
-        st.markdown(user_feedback)
+    user_feedback_msg = {"role": "user", "content": user_feedback}
+    st.session_state.messages.append(user_feedback_msg)
+    with st.chat_message(user_feedback_msg["role"]):
+        render_message_content(user_feedback_msg, len(st.session_state.messages) - 1)
 
-    def generate_user_prompt(include_process: bool = False, include_evaluate: bool = False):
+    def generate_user_prompt(include_process: bool = False, include_evaluate: bool = False, step_by_step: bool = False):
         last_assistant_msg = next(
             (
                 m for m in reversed(st.session_state.messages[:-1]) 
@@ -282,7 +293,7 @@ if user_feedback:
         )
         
         current_iter_prompt = f""
-        if last_assistant_msg:
+        if last_assistant_msg and not step_by_step:
             current_iter_prompt += f"--- 上一轮执行状态/系统回复 ---\n{last_assistant_msg['content']}\n"
 
             l_params = last_assistant_msg.get("best_params", {})
@@ -440,17 +451,15 @@ if user_feedback:
             main_status.update(label="本轮调整结束", state="complete")
             st.session_state['best_bgr'] = best_bgr
 
-            with st.expander("最优参数 (用于调试)"):
-                st.json(best_params)
-
-            # 将系统的回应和新图像记入历史记录
-            st.session_state.messages.append({
+            new_msg = {
                 "role": "assistant",
                 "content": "已完成本轮调优。请查看图像，如果需要进一步调整（如：增加亮度、减少对比度），请直接告诉我。",
                 "image": best_bgr,
                 "eval_code": evaluate_code_str,
                 "process_code": process_code_str,
                 "best_params": best_params
-            })
+            }
+            st.session_state.messages.append(new_msg)
 
-            st.rerun()
+            render_message_content(new_msg, len(st.session_state.messages) - 1)
+            update_top_preview()
