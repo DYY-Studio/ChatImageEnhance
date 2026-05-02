@@ -4,17 +4,21 @@ import numpy as np
 import httpx
 
 from openai import OpenAI, DefaultHttpxClient
-from typing import Generator
 from queue import Queue
 from pathlib import Path
 from streamlit_local_storage import LocalStorage
 
 from core.orchestrator import Orchestrator
 from core.evaluator import Evaluator
+from core.searcher import Searcher
+
 from agents.coder import CoderAgent
 from agents.evaluator import EvaluatorAgent
 from agents.planner import PlannerAgent
-from components.optuna_callbacks import StOptunaCallback, StOptunaCallbackImg
+from agents.toolmaker import ToolMakerAgent
+
+from components.optuna_callbacks import StOptunaCallbackImg
+from components.tool_search import StSearch
 
 localS = LocalStorage()
 
@@ -35,6 +39,8 @@ if 'has_api_key' not in st.session_state:
     st.session_state['has_api_key'] = st.session_state.api_key != ""
 if 'proxy_url' not in st.session_state:
     st.session_state['proxy_url'] = localS.getItem('proxy_url') or ""
+if 'github_token' not in st.session_state:
+    st.session_state['github_token'] = localS.getItem('github_token') or ""
 
 @st.cache_resource
 def get_openai_client(base_url: str, api_key: str, proxy_url: str):
@@ -75,11 +81,10 @@ st.caption("LLM Agent + Optuna 人类在环图像增强系统")
 st.divider()
 
 with st.sidebar:
-    st.header("模型设置")
-    s1c1, s1c2 = st.columns([0.001, 0.999])
-    with s1c2:
+    st.header("设置")
+    with st.expander("模型", expanded=True):
         api_url = st.text_input(
-            "API URL (OpenAI 兼容)", 
+            "API URL (OpenAI 兼容端点)", 
             placeholder='https://api.openai.com/v1', 
             key="api_url",
             on_change=clear_models
@@ -96,17 +101,29 @@ with st.sidebar:
             options = st.session_state.models,
             index = 0 if st.session_state.models else None
         )
+
+    with st.expander("代码检索", expanded=True):
+        github_token = st.text_input("GitHub Token", type='password', key="github_token")
+        search_steps_limit = st.slider("搜索步骤数限制", 10, 100, 30, disabled=not github_token)
     
-    st.header("处理设置")
-    s2c1, s2c2 = st.columns([0.001, 0.999])
-    with s2c2:
+    with st.expander("处理", expanded=True):
+        step_by_step = st.toggle("处理时基于上一轮图像")
         n_trials = st.slider("优化轮数", 5, 150, 15)
 
-    if fetch_button and st.session_state.models:
+    if (cache_api := fetch_button and st.session_state.models) or github_token:
         with st.container(height=1, border=False):
-            localS.setItem("api_url", api_url, "locals_api_url")
-            localS.setItem("api_key", api_key, "locals_api_key")
-            localS.setItem("proxy_url", proxy_url, "locals_proxy_url")
+            if cache_api:
+                if api_url: localS.setItem("api_url", api_url, "locals_api_url")
+                elif localS.getItem("api_url"): localS.deleteItem("api_url", "del_locals_api_url")
+
+                if api_key: localS.setItem("api_key", api_key, "locals_api_key")
+                elif localS.getItem("api_key"): localS.deleteItem("api_key", "del_locals_api_key")
+
+                if proxy_url: localS.setItem("proxy_url", proxy_url, "locals_proxy_url")
+                elif localS.getItem("proxy_url"): localS.deleteItem("proxy_url", "del_locals_proxy_url")
+
+            if github_token: localS.setItem("github_token", github_token, "locals_github_token")
+            elif localS.getItem("github_token"): localS.deleteItem("github_token", "del_locals_github_token")
 
 upload = st.file_uploader("上传图像", ["png", "jpg", "jpeg"])
 
@@ -131,7 +148,14 @@ if upload:
     else:
         st.subheader("原图")
         st.image(img_bgr, width="stretch", channels="BGR")
+else:
+    st.session_state.messages.clear()
+    st.session_state['best_bgr'] = None
 
+@st.cache_data
+def get_encoded_img(raw_array: np.ndarray):
+    succ, enc_img = cv2.imencode('.png', raw_array, [cv2.IMWRITE_PNG_COMPRESSION, 2])
+    return succ, enc_img.tobytes()
 
 # --- 渲染历史聊天记录 ---
 for i, msg in enumerate(st.session_state.messages):
@@ -151,11 +175,11 @@ for i, msg in enumerate(st.session_state.messages):
                     st.json(msg.get("best_params", {}))
             
             # 从内存直接提供历史版本的下载
-            succ, enc_img = cv2.imencode('.png', msg["image"], [cv2.IMWRITE_PNG_COMPRESSION, 2])
+            succ, enc_img_bytes = get_encoded_img(msg["image"])
             if succ:
                 st.download_button(
                     label="📥 保存此版本", 
-                    data=enc_img.tobytes(), 
+                    data=enc_img_bytes, 
                     file_name=f"enhanced_history_{i}.png", 
                     mime="image/png", 
                     key=f"dl_history_{i}"
@@ -266,12 +290,12 @@ if user_feedback:
             # current_iter_prompt += "\n请仅基于全局目标、上一轮的状态和本次人类的最新反馈，修改评价指标、代码或 Optuna 参数范围。"
         else:
             current_iter_prompt += f"--- 用户要求 ---\n{user_feedback}"
-        # ==========================================
 
         client = get_openai_client(st.session_state.api_url, st.session_state.api_key, st.session_state.proxy_url)
         orch = Orchestrator(
             CoderAgent(client, selected_model),
-            EvaluatorAgent(client, selected_model)
+            EvaluatorAgent(client, selected_model),
+            ToolMakerAgent(client, selected_model)
         )
 
         with (main_status := st.status("🛠️ 根据反馈调整并运行...", expanded=True)):
@@ -279,6 +303,12 @@ if user_feedback:
                 eva_message = st.empty()
             with (llm_status := st.status("🧠 LLM 调整增强代码", state="error")):
                 chat_message = st.empty()
+            with (tool_status := st.status("⌨️ LLM 编写额外工具", state="error")):
+                if github_token:
+                    search_placeholder = st.status("🌐 搜索 GitHub", state="error")
+                else:
+                    search_placeholder = None   
+                tool_message = st.empty()
             with (optuna_status := st.status("🔬 Optuna 重新调优", state="error")):
                 status_text = st.empty()
                 progress_bar = st.progress(0)
@@ -315,7 +345,7 @@ if user_feedback:
 
             # 执行 Coder 与 Optuna 流
             def stream_wrapper():
-                global best_bgr, best_params, log, llm_status, optuna_status, process_code_str
+                global best_bgr, best_params, log, llm_status, optuna_status, process_code_str, search_placeholder
                 # 同样传入包含人类反馈的 current_iter_prompt
                 for t, body in orch.process_stream(
                     image=img_bgr,
@@ -333,11 +363,25 @@ if user_feedback:
                         yield body
                     elif t == "CODE.END":
                         llm_status.update(state="complete")
-                        optuna_status.update(state="running")
                         process_code_str = body
+                    elif t == "OPTUNA.START":
+                        optuna_status.update(state="running")
                     elif t == "FINISH":
                         optuna_status.update(state="complete")
                         best_bgr, best_params, log = body
+                    
+                    elif t == "TOOL_REQUEST":
+                        search_result = ''
+                        llm_status.update(state='error')
+                        tool_status.update(state='running')
+                        if search_placeholder:
+                            if github_token:
+                                searcher = Searcher(github_token, client, selected_model)
+                                search_result = StSearch(searcher, body['description'], search_placeholder)
+                            else:
+                                with search_placeholder:
+                                    st.text("未输入 GitHub Token，禁用网络搜索")
+                        st.stop()
 
             chat_message.write_stream(stream_wrapper())
 
