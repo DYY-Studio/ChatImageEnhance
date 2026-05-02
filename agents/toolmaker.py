@@ -124,9 +124,9 @@ class ToolMakerAgent(BaseAgent):
         if user_intent:
             user_prompt += f"{user_intent}"
         if init_details:
-            user_prompt += f"原始图像量化信息：{init_details}\n"
+            user_prompt += f"\n原始图像量化信息：{init_details}\n"
         if previous_errors:
-            user_prompt += f"上一轮代码执行错误信息：{previous_errors}\n请优先修复该错误再生成代码\n"
+            user_prompt += f"\n上一轮代码执行错误信息：{previous_errors}\n请优先修复该错误再生成代码\n"
         logger.info(f"注入提示词：\n{user_prompt}")
         return user_prompt
 
