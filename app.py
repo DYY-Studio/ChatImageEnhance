@@ -105,10 +105,20 @@ with st.sidebar:
 
     with st.expander("代码检索", expanded=True):
         github_token = st.text_input("GitHub Token", type='password', key="github_token")
-        search_steps_limit = st.slider("搜索步骤数限制", 10, 100, 30, disabled=not github_token)
+        search_steps_limit = st.slider(
+            "搜索步骤数限制", 10, 100, 30, step=1, disabled=not github_token,
+            help="限制最多 LLM 调用次数，防止难以找到时无限运行"
+        )
+        search_interval = st.slider(
+            "强制步骤间隔 (秒)", 0.0, 60.0, 5.0, step=0.5, disabled=not github_token,
+            help="强行在两次请求之间插入间隔，防止请求过于频繁"
+        )
     
     with st.expander("处理", expanded=True):
-        step_by_step = st.toggle("处理时基于上一轮图像")
+        step_by_step = st.toggle(
+            "处理时基于上一轮图像",
+            help="不勾选时每次处理均在原图上进行，勾选后则对上一轮结果进行"
+        )
         n_trials = st.slider("优化轮数", 5, 150, 15)
 
     if (cache_api := fetch_button and st.session_state.models) or github_token:
@@ -261,9 +271,7 @@ if user_feedback:
     with st.chat_message("user"):
         st.markdown(user_feedback)
 
-    # 2. 启动智能体响应
-    with st.chat_message("assistant"):
-        # 整合上下文策略：将初始目标、历史反馈和当前诉求组装给 LLM
+    def generate_user_prompt(include_process: bool = False, include_evaluate: bool = False):
         last_assistant_msg = next(
             (
                 m for m in reversed(st.session_state.messages[:-1]) 
@@ -281,8 +289,8 @@ if user_feedback:
             l_proc = last_assistant_msg.get("process_code", "")
             
             if l_eval and l_proc:
-                current_iter_prompt += f"\n--- 上一轮使用的评价函数代码 ---\n```python\n{l_eval}\n```\n"
-                current_iter_prompt += f"\n--- 上一轮使用的图像处理代码 ---\n```python\n{l_proc}\n```\n"
+                if include_evaluate: current_iter_prompt += f"\n--- 上一轮使用的评价函数代码 ---\n```python\n{l_eval}\n```\n"
+                if include_process: current_iter_prompt += f"\n--- 上一轮使用的图像处理代码 ---\n```python\n{l_proc}\n```\n"
 
             if l_params:
                 current_iter_prompt += f"\n--- 上一轮 Optuna 搜索到的最优参数 ---\n{l_params}\n"
@@ -291,6 +299,11 @@ if user_feedback:
             # current_iter_prompt += "\n请仅基于全局目标、上一轮的状态和本次人类的最新反馈，修改评价指标、代码或 Optuna 参数范围。"
         else:
             current_iter_prompt += f"--- 用户要求 ---\n{user_feedback}"
+        return current_iter_prompt
+
+    # 2. 启动智能体响应
+    with st.chat_message("assistant"):
+        # 整合上下文策略：将初始目标、历史反馈和当前诉求组装给 LLM
 
         client = get_openai_client(st.session_state.api_url, st.session_state.api_key, st.session_state.proxy_url)
         orch = Orchestrator(
@@ -302,15 +315,9 @@ if user_feedback:
         with (main_status := st.status("🛠️ 根据反馈调整并运行...", expanded=True)):
             with (eva_status := st.status("📝 LLM 调整评价策略", state="error")):
                 eva_thinking_container = st.container(border=False)
-                eva_message = st.empty()
-            with (llm_status := st.status("🧠 LLM 调整增强代码", state="error")):
-                chat_message = st.empty()
-            with (tool_status := st.status("⌨️ LLM 编写额外工具", state="error")):
-                if github_token:
-                    search_placeholder = st.status("🌐 搜索 GitHub", state="error")
-                else:
-                    search_placeholder = None   
-                tool_message = st.empty()
+            with (main_container := st.container(border=False)):
+                with (code_status := st.status("🧠 LLM 调整增强代码", state="error")):
+                    code_thinking_container = st.container(border=False)
             with (optuna_status := st.status("🔬 Optuna 重新调优", state="error")):
                 status_text = st.empty()
                 progress_bar = st.progress(0)
@@ -322,81 +329,107 @@ if user_feedback:
             callback = StOptunaCallbackImg(n_trials, progress_bar, status_text, table_placeholder, best_img, best_queue)
 
             best_bgr, best_params, log = None, None, None
-
-            # evaluate_handler = StStreamResHandler(eva_status, eva_thinking_container)
-
             evaluate_code_str = ''
-            evaluate_thinking_str = ''
+            process_code_str = ''
 
-            evaluate_thinking_delta = None
-            evaluate_thinking_status = None
+            evaluate_handler = StStreamResHandler(eva_status, eva_thinking_container)
 
-            for t, body in orch.prepare_stream(image=img_bgr, user_prompt=current_iter_prompt):
+            for t, body in orch.prepare_stream(image=img_bgr, user_prompt=generate_user_prompt(True, True)):
                 if t == "CODE_EVALUATE.START":
                     eva_status.update(state="running")
                 elif t == "CODE_EVALUATE.REASONING":
-                    if evaluate_thinking_delta is None:
-                        with eva_thinking_container:
-                            with (evaluate_thinking_status := st.status("思考中...", state="running")):
-                                evaluate_thinking_delta = st.empty()
-                                evaluate_thinking_status.update(state='running')
-                    evaluate_thinking_str += body
-                    evaluate_thinking_delta.markdown(evaluate_thinking_str, unsafe_allow_html=True)
+                    evaluate_handler.thinking_chunk(body)
                 elif t == "CODE_EVALUATE.STREAM":
-                    evaluate_code_str += body
-                    eva_message.markdown(evaluate_code_str, unsafe_allow_html=True)
-                    if evaluate_thinking_status and evaluate_thinking_status._current_state != 'complete':
-                        evaluate_thinking_status.update(label="显示思考", state='complete')
+                    evaluate_handler.content_chunk(body)
+                    evaluate_handler.thinking_end()
                 elif t == "CODE_EVALUATE.END":
-                    pass
+                    evaluate_handler.content_end()
                 elif t == "FINISH":
                     eva_status.update(state="complete")
                     evaluate_code_str = body
-                    eva_message.markdown(body, f"```python\n{evaluate_code_str}\n```")
+                    evaluate_handler.set_content(f"```python\n{evaluate_code_str}\n```")
 
-            process_code_str = ""
+            coding_finish = False
 
-            # 执行 Coder 与 Optuna 流
-            def stream_wrapper():
-                global best_bgr, best_params, log, llm_status, optuna_status, process_code_str, search_placeholder
-                # 同样传入包含人类反馈的 current_iter_prompt
+            while not coding_finish:
+                tool_request = ''
+                tool_status = None
+                search_result = dict()
+                coder_handler = StStreamResHandler(code_status, code_thinking_container)
+
+                orch.coder.rebuild_system_prompt()
                 for t, body in orch.process_stream(
                     image=img_bgr,
                     evaluate_code_str=evaluate_code_str,
                     best_queue=best_queue,
-                    user_prompt=current_iter_prompt,
+                    user_prompt=generate_user_prompt(True, True),
                     n_trials=n_trials,
                     callbacks=[callback]
                 ):
                     if t == "CODE.START":
-                        llm_status.update(state="running")
+                        pass
                     elif t == "CODE.REASONING":
-                        yield body
+                        coder_handler.thinking_chunk(body)
                     elif t == "CODE.STREAM":
-                        yield body
+                        coder_handler.content_chunk(body)
+                        coder_handler.thinking_end()
                     elif t == "CODE.END":
-                        llm_status.update(state="complete")
+                        coder_handler.content_end()
                         process_code_str = body
                     elif t == "OPTUNA.START":
                         optuna_status.update(state="running")
                     elif t == "FINISH":
                         optuna_status.update(state="complete")
                         best_bgr, best_params, log = body
+
+                        coding_finish = True
                     
                     elif t == "TOOL_REQUEST":
-                        search_result = ''
-                        llm_status.update(state='error')
-                        tool_status.update(state='running')
-                        if search_placeholder:
-                            if github_token:
-                                searcher = Searcher(github_token, client, selected_model)
-                                search_result = StSearch(searcher, body['description'], search_placeholder)
-                            else:
-                                with search_placeholder:
-                                    st.text("未输入 GitHub Token，禁用网络搜索")
-                        st.stop()
+                        code_status.update(state='error')
+                        tool_request = body['description']
 
-            chat_message.write_stream(stream_wrapper())
+                        if github_token:
+                            with main_container:
+                                with (tool_status := st.status("⌨️ LLM 编写额外工具", state="error")):
+                                    search_container = st.container(border=False)
+
+                                tool_status.update(state='running')
+                                if search_container:
+                                    if github_token:
+                                        searcher = Searcher(github_token, client, selected_model)
+                                        search_result: dict = StSearch(
+                                            searcher, tool_request, search_container, search_steps_limit, search_interval
+                                        )
+                        break
+                
+                if tool_request:
+                    with main_container:
+                        if not tool_status:
+                            tool_status = st.status("⌨️ LLM 编写额外工具", state="error")
+
+                        with tool_status:
+                            with (toolmaker_status := st.status("⌨️ 编写工具", state="error")):
+                                toolmaker_container = st.container(border=False)
+
+                    toolmaker_handler = StStreamResHandler(toolmaker_status, toolmaker_container)
+                        
+                    for t, body in orch.toolmaker_stream(tool_request, search_result):
+                        if t == "CODE_TOOL.STREAM":
+                            toolmaker_handler.content_chunk(body)
+                            toolmaker_handler.thinking_end()
+                        elif t == "CODE_TOOL.REASONING":
+                            toolmaker_handler.thinking_chunk(body)
+                        elif t == "CODE_TOOL.END":
+                            toolmaker_handler.content_end()
+                        elif t == "ERROR_RETRY":
+                            with main_container:
+                                with tool_status:
+                                    with (toolmaker_status := st.status("⌨️ 编写工具", state="error")):
+                                        toolmaker_container = st.container(border=False)
+                            
+                            toolmaker_handler = StStreamResHandler(toolmaker_status, toolmaker_container)
+                        elif t == "FINISH":
+                            break
 
         # --- 收尾与状态更新 ---
         if best_bgr is None:
