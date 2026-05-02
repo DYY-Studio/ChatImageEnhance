@@ -2,8 +2,14 @@ import numpy as np
 import inspect
 import json
 import yaml
+import importlib.util
+import sys
+import logging
 
 from typing import Callable
+from utils import get_executable_dir
+
+logger = logging.getLogger("ToolRegistry")
 
 class ToolRegistry:
     """
@@ -13,6 +19,38 @@ class ToolRegistry:
     """
     def __init__(self):
         self._tools = {}
+
+    def load_custom_tools(self):
+        custom_tool_dir = get_executable_dir() / "tools/custom"
+        if not custom_tool_dir.exists():
+            return
+        
+        for file in custom_tool_dir.iterdir():
+            if not file.is_file() or file.suffix.lower() != '.py':
+                continue
+
+            if (schema_file := file.with_suffix('.yaml')).exists():
+                try:
+                    schema = yaml.load(schema_file.read_text('utf-8'))
+                    module = ToolRegistry._load_tool_from_file(
+                        f"dynamic_tools_{schema['name']}", str(file.absolute())
+                    )
+                    self.dynamic_register(
+                        getattr(module, schema['name']),
+                        schema
+                    )
+                    logger.info(f"Successfully load custom tool: {schema['name']}")
+                except Exception as e:
+                    logger.info(f"Custom tool {file.with_suffix('').name} dynamic load failed: {e}")
+
+
+    @staticmethod
+    def _load_tool_from_file(module_name: str, file_path: str):
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+        return module
 
     @property
     def tools(self):
