@@ -7,3 +7,4 @@ pyyaml
 streamlit
 streamlit-local-storage
 scikit-image
+PyGithub
