@@ -381,7 +381,7 @@ if user_feedback:
 
             evaluate_handler = StStreamResHandler(eva_status, eva_thinking_container)
 
-            for t, body in orch.prepare_stream(image=img_bgr, user_prompt=generate_user_prompt(True, True)):
+            for t, body in orch.prepare_stream(image=img_bgr, user_prompt=generate_user_prompt(True, True, step_by_step)):
                 if t == "CODE_EVALUATE.START":
                     eva_status.update(state="running")
                 elif t == "CODE_EVALUATE.REASONING":
@@ -406,10 +406,10 @@ if user_feedback:
 
                 orch.coder.rebuild_system_prompt()
                 for t, body in orch.process_stream(
-                    image=img_bgr,
+                    image=st.session_state['best_bgr'] if step_by_step and st.session_state['best_bgr'] else img_bgr,
                     evaluate_code_str=evaluate_code_str,
                     best_queue=best_queue,
-                    user_prompt=generate_user_prompt(True, True),
+                    user_prompt=generate_user_prompt(True, True, step_by_step),
                     n_trials=n_trials,
                     callbacks=[callback]
                 ):
