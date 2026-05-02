@@ -36,7 +36,7 @@ class Orchestrator:
             return False, traceback.format_exc()
         return True, None
 
-    def toolmaker_stream(self, tool_request: str, search_result: str = '') -> Generator[tuple[
+    def toolmaker_stream(self, tool_request: str, search_result: dict | None = None) -> Generator[tuple[
         Literal[
             "CODE_TOOL.START", "CODE_TOOL.END", "CODE_TOOL.STREAM", 
             "CODE_TOOL.REASONING", "FINISH", "ERROR_RETRY"
@@ -44,8 +44,17 @@ class Orchestrator:
         str | None
     ], None, None]:
         toolmaker_prompt = f"用户需求: \n{tool_request}"
-        if search_result:
-            toolmaker_prompt += f"\n检索结果: \n{search_result}"
+        if isinstance(search_result, dict) and 'code_snippets' in search_result and 'summary' in search_result:
+            search_result_str = f"""
+提取到的代码:
+```
+{search_result['code_snippets']}
+```
+
+概述
+{search_result['summary']}
+""".strip(' \n')
+            toolmaker_prompt += f"\n检索结果: \n{search_result_str}"
 
         error_log = None
         code_str = ""
