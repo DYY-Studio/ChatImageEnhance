@@ -26,13 +26,14 @@ class CoderAgent(BaseAgent):
         :param model_name: 使用的大模型名称，默认gpt-4o-mini（兼顾效率和代码生成能力）
         :param temperature: 生成温度，低温度保证代码逻辑稳定性（0.0-0.2为宜）
         """
-        # 构造CoderAgent专属的系统提示词，明确代码生成规则
-        system_prompt = self._build_system_prompt()
         # 调用父类初始化（LLM客户端、模型名、系统提示词、温度）
-        super().__init__(llm_client, model_name, system_prompt, temperature)
+        super().__init__(llm_client, model_name, self._build_system_prompt(), temperature)
         # 加载全局算子注册表（供Prompt注入可用CV算子信息）
         self.tools = global_registry._tools
         logger.info("CoderAgent 初始化完成，已加载全局算子注册表")
+
+    def rebuild_system_prompt(self):
+        self.system_prompt = self._build_system_prompt()
 
     def _build_system_prompt(self) -> str:
         """
