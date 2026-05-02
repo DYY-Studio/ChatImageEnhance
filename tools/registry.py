@@ -42,6 +42,21 @@ class ToolRegistry:
             }
         }
 
+    def dynamic_register(self, func: Callable, schema: dict):
+        """动态注册LLM生成的算子"""
+        func_name = schema["name"]
+        
+        # 2. 注册到内存
+        self._tools[func_name] = {
+            "func": func,
+            "schema": schema,
+            "is_dynamic": True # 标记为动态生成的工具
+        }
+        
+        # 3. 持久化（可选）：将 code_str 写入到 tools/custom_wrappers.py 
+        # 以便下次启动时自动加载
+        # self._persist_to_file(code_str, schema)
+
     def register(self, name: str, func: Callable, description: str, params_schema: dict):
         """
         注册一个 CV 函数及其参数范围
