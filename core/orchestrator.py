@@ -41,7 +41,7 @@ class Orchestrator:
             "CODE_TOOL.START", "CODE_TOOL.END", "CODE_TOOL.STREAM", 
             "CODE_TOOL.REASONING", "FINISH", "ERROR_RETRY"
         ], 
-        str | None
+        str | dict | None
     ], None, None]:
         toolmaker_prompt = f"用户需求: \n{tool_request}"
         if isinstance(search_result, dict) and 'code_snippets' in search_result and 'summary' in search_result:
@@ -75,7 +75,10 @@ class Orchestrator:
             try:
                 e = self.executor.test_generated_tools(code_str, schema['name'], schema)
                 if e is None:
-                    yield "FINISH", schema['name']
+                    yield "FINISH", {
+                        "code": code_str,
+                        "schema": schema
+                    }
                     break
 
                 toolmaker_prompt = code_str
