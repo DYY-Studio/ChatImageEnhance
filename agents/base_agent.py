@@ -69,7 +69,7 @@ class BaseAgent:
             {"role": "user", "content": user_content},
         ]
 
-        logger.info(json.dumps(
+        logger.debug(json.dumps(
             [
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": [content for content in user_content if content['type'] == 'text']},
