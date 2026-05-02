@@ -2,9 +2,11 @@ from agents.searcher import SearcherAgent
 
 from github import Auth, Github
 from typing import Generator, Literal
+from datetime import datetime, UTC
 
 import logging
 import time
+import json
 
 logger = logging.getLogger("Searcher")
 
@@ -23,14 +25,20 @@ class Searcher:
         else:
             return f"Tool Use Error: Cannot find tool {tool_name}"
 
-    def search(self, prompt: str, steps_limit: int = 30) -> Generator[tuple[str, str], None, None]:
+    def search(self, prompt: str, steps_limit: int = 30, interval: float = 0.5) -> Generator[tuple[str, str | dict], None, None]:
         content: dict | None = None
         thinks: str = f"用户输入: {prompt.strip()}"
         tool_result: str = ''
 
+        rate_limit = self.github.get_rate_limit().resources
+        if not rate_limit.search.remaining:
+            yield 'SEARCH.API_LIMIT_REACHED', None
+            return
+
         times: int = 0
         while content is None or 'tool' not in content or content['tool'] != 'submit_findings':
             times += 1
+            start_time = datetime.now(UTC)
             for t, chunk in self.searcher.execute_stream(thinks + tool_result):
                 if t == "STREAM.REASONING":
                     yield f"SEARCH.REASONING.{times}", chunk
@@ -47,12 +55,15 @@ class Searcher:
                 break
 
             if times >= steps_limit:
-                yield 'SEARCH.LIMIT_REACHED', None
+                yield 'SEARCH.STEPS_LIMIT_REACHED', None
+                return
             
+            thinks += f"调用{times}: {content['tool']}, {json.dumps(content['params'], ensure_ascii=False)}"
             tool_result = self.use_tool(content['tool'], content['params']).strip(' \n')
             tool_result = f"\n\n工具调用结果:\n```\n{tool_result}\n```"
             logger.info(tool_result.strip('\n'))
 
-            time.sleep(0.2)
+            if (duration := (datetime.now(UTC) - start_time).total_seconds()) < interval:
+                time.sleep(interval - duration)
 
         yield 'SEARCH.FINISH', content['params'] if content and 'params' in content else None
