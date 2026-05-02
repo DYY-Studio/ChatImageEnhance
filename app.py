@@ -2,10 +2,10 @@ import streamlit as st
 import cv2
 import numpy as np
 import httpx
+import yaml
 
 from openai import OpenAI, DefaultHttpxClient
 from queue import Queue
-from pathlib import Path
 from streamlit_local_storage import LocalStorage
 
 from core.orchestrator import Orchestrator
@@ -20,6 +20,8 @@ from agents.toolmaker import ToolMakerAgent
 from components.optuna_callbacks import StOptunaCallbackImg
 from components.tool_search import StSearch
 from components.llm_response_handler import StStreamResHandler
+
+from utils import get_executable_dir
 
 localS = LocalStorage()
 
@@ -192,15 +194,47 @@ def render_message_content(msg, index):
             with st.expander("Optuna 最优参数组合"):
                 st.json(msg.get("best_params", {}))
         
-        succ, enc_img_bytes = get_encoded_img(msg["image"])
-        if succ:
-            st.download_button(
-                label="📥 保存此版本", 
-                data=enc_img_bytes, 
-                file_name=f"enhanced_history_{index}.png", 
-                mime="image/png", 
-                key=f"dl_history_{index}"
-            )
+        btn_col1, btn_col2 = st.columns(2)
+        with btn_col1:
+            succ, enc_img_bytes = get_encoded_img(msg["image"])
+            if succ:
+                st.download_button(
+                    label="📥 保存此版本", 
+                    data=enc_img_bytes, 
+                    file_name=f"enhanced_history_{index}.png", 
+                    mime="image/png", 
+                    key=f"dl_history_{index}"
+                )
+            else:
+                st.button("📥 保存此版本", disabled=True)
+            
+        with btn_col2:
+            if msg["new_tool"]:
+                def save_tool(tool: dict):
+                    custom_tool_dir = get_executable_dir() / "tools/custom"
+                    custom_tool_dir.mkdir(parents=True, exist_ok=True)
+
+                    tool_schema = tool['schema']
+                    tool_code = tool['code']
+
+                    tool_name: str = tool_schema['name']
+
+                    (custom_tool_dir / tool_name).with_suffix(".yaml").write_text(
+                        yaml.dump(tool_schema, allow_unicode=True, indent=2), encoding='utf-8'
+                    )
+
+                    imports_text = "import numpy as np\nimport cv2\nimport math\nimport skimage\nimport scipy"
+
+                    (custom_tool_dir / tool_name).with_suffix(".py").write_text(
+                        f"{imports_text}\n\n{tool_code}", encoding='utf-8'
+                    )
+
+                file_name = get_executable_dir() / f"tools/custom/{msg['new_tool']['schema']['name']}"
+
+                if file_name.with_suffix(".yaml").exists() and file_name.with_suffix(".py").exists():
+                    st.button("🆕 保存新工具", disabled=True)
+                else:
+                    st.button("🆕 保存新工具", on_click=save_tool, args=[msg['new_tool']])
 
 # --- 渲染历史聊天记录 ---
 for i, msg in enumerate(st.session_state.messages):
@@ -343,6 +377,7 @@ if user_feedback:
             best_bgr, best_params, log = None, None, None
             evaluate_code_str = ''
             process_code_str = ''
+            new_tool: dict | None = None
 
             evaluate_handler = StStreamResHandler(eva_status, eva_thinking_container)
 
@@ -441,7 +476,7 @@ if user_feedback:
                             
                             toolmaker_handler = StStreamResHandler(toolmaker_status, toolmaker_container)
                         elif t == "FINISH":
-                            break
+                            new_tool = body
 
         # --- 收尾与状态更新 ---
         if best_bgr is None:
@@ -457,8 +492,9 @@ if user_feedback:
                 "image": best_bgr,
                 "eval_code": evaluate_code_str,
                 "process_code": process_code_str,
-                "best_params": best_params
+                "best_params": best_params,
             }
+            if new_tool: new_msg["new_tool"] = new_tool
             st.session_state.messages.append(new_msg)
 
             render_message_content(new_msg, len(st.session_state.messages) - 1)
