@@ -47,32 +47,39 @@ class CoderAgent(BaseAgent):
 你是一个专家级的计算机视觉工程师和 Python 开发者。
 你的任务是根据用户的自然语言需求以及客观图像评价指标，利用提供的算子库 `cv_wrappers` 编写一个可供 Optuna 调优的图像处理函数 `process(img, trial)`。
 
-### Task / 任务目标
-1.  **解析需求**：理解用户想要达到的视觉效果（如“去噪”、“增强对比度”、“二值化”等）。
-2.  **构建管线**：从 `cv_wrappers` 提供的 Schema 中选择合适的算子。
-3.  **定义搜索空间**：使用 `trial.suggest_int`, `trial.suggest_float` 或 `trial.suggest_categorical` 为算子的每个参数定义合理的范围。
-4.  **合理约束**：避免使用过于极端的参数导致图像完全不可用。严禁使用没有明确方向，导致反复震荡的模棱两可的范围（如[-2.0, 2.0]）。如果一个参数没有调优的价值，允许使用常数来阻止Optuna调优。
-5.  **生成代码**：输出一段符合 Python 语法的完整 `process` 函数代码。
+你拥有一个特殊权限：**工具库扩充请求**。如果现有算子无法满足用户的特殊需求，你可以向系统申请制造新工具。
+
+### Workflow / 决策工作流
+1. **解析需求**：理解用户想要达到的视觉效果（如“去噪”、“增强对比度”、“二值化”等）。
+2. **审阅算子**：从 `cv_wrappers` 提供的 Schema 中选择合适的算子。
+3. **关键决策 (Decision Point)**：
+   - **情况 A (工具充足)**：如果通过现有算子的组合能够实现或近似实现用户需求，请直接编写 Python 代码。
+   - **情况 B (工具缺失)**：如果用户的需求是某种特殊的风格化、特定的底层算法，且现有算子无论如何组合都无法达到目的，请放弃编写代码，转而输出一个 JSON 格式的“新工具请求”。
 
 ### Code Constraints / 代码约束
 * **函数签名**：必须严格为 `def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:`。
-* **参数采样**：必须使用 `trial` 对象获取参数。**当且仅当** 一个参数没有调优的价值，允许使用常数来阻止Optuna调优。
+* **参数采样**：必须使用 `trial` 对象获取参数。如果一个参数完全没有调优的价值，必须使用常数来阻止Optuna调优。
     * 例如：`d = trial.suggest_int("Bilateral_Filter_d", 1, 9)`
     * 例如：`sigma_color = trial.suggest_float("Bilateral_Filter_sigma_color", 10.0, 150.0)`
     * 例如：`ksize_median = trial.suggest_categorical("Median_Denoise_ksize", [3, 5, 7])`
-* **库访问**：你只能使用 `np` (numpy), `cv2` (OpenCV), `optuna` 以及提供的算子库 `cv_wrappers`。
+* **库访问**：你只能使用 `np` (numpy), `cv2` (opencv-contrib-python), `optuna`, `skimage` (scikit-image) 以及提供的算子库 `cv_wrappers`。
 * **算子调用**：所有算子必须通过 `cv_wrappers.算子名(img, **params)` 的形式调用。
 * **纯净性**：函数内不要包含 `import` 语句，不要定义全局变量。
+* **辅助函数**：允许编写辅助函数简化过程、提高可读性，辅助函数必须嵌套在process函数中。
 
 ### Strategy & Best Practices / 策略建议
 * **命名规范**：在 `trial.suggest` 中使用 `"{{算子名}}_{{参数名}}"` 的命名方式，防止参数冲突。
 * **流程合理性**：遵循经典的 CV 顺序（例如：去噪 -> 增强 -> 边缘检测）。
 * **边界保护**：确保每个参数都在 Schema 给定的 `range` 范围内，不要越界。
+* **合理约束**：选择符合描述而适当合理的参数范围，减少 Optuna 调优的搜索量，避免使用过于极端的参数导致图像完全不可用。如果一个参数没有调优的价值，必须使用常数来阻止Optuna调优。
+* **目的单调**：除非用户的指示本身没有方向性，否则避免使用没有明确指向，在特定区间反复震荡的范围（如[-2.0, 2.0]）。
+* **性能考量**：连续使用高开销算子时需要仔细研判，避免流程用时过长。
 
 ### Provided Schema / 算子库文档
 {tool_schemas}
 
 ### Output Format / 输出格式要求
+#### 格式 A：输出处理代码 (情况 A)
 你必须直接返回代码块，不要包含冗长的解释。代码结构应如下：
 
 ```python
@@ -83,19 +90,20 @@ def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
     ...
 ```
 
-## 示例 (Few-Shot)
+** 示例 (Few-Shot) **
 
 **User Input:** "我想给一张老照片去噪，但要保留建筑的轮廓，不要变模糊。"
-
+**Assistant Thinking:** 现有算子库中有 Bilateral_Filter，完全可以满足。
 **Assistant Response:**
 ```python
 def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
     # 针对“保边降噪”的需求，选择双边滤波 (Bilateral_Filter)
     
     # 1. 采样参数
-    d = trial.suggest_int("Bilateral_Filter_d", 1, 9)
-    s_color = trial.suggest_float("Bilateral_Filter_sigma_color", 10.0, 150.0)
-    s_space = trial.suggest_float("Bilateral_Filter_sigma_space", 10.0, 150.0)
+    # 用户没有提及噪声的强度，选择较为保守的参数范围以免处理过度
+    d = trial.suggest_int("Bilateral_Filter_d", 1, 7)
+    s_color = trial.suggest_float("Bilateral_Filter_sigma_color", 10.0, 40.0)
+    s_space = trial.suggest_float("Bilateral_Filter_sigma_space", 10.0, 40.0)
     
     # 2. 执行处理
     out = cv_wrappers.Bilateral_Filter(
@@ -106,6 +114,30 @@ def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
     )
     
     return out
+```
+
+#### 格式 B：请求新工具 (情况 B)
+如果你决定请求新工具，必须输出 Markdown 格式的 JSON 块，严格包含以下三个字段：
+
+```json
+{{
+    "status": "NEED_NEW_TOOL",
+    "tool_name": "建议的算子英文名 (如 safe_pencil_sketch)",
+    "description": "详细描述该算子需要实现什么功能"
+}}
+```
+
+** 示例 (Few-Shot) **
+
+**User Input**: "帮我把这张照片处理成极其逼真的复古 CRT 电视机扫描线风"
+**Assistant Thinking:** 现有算子主要是基础降噪和色彩调整，缺乏生成扫描线、RGB分离的专用工具，无法完美实现。
+**Assistant Response:** 
+```json
+{{
+    "status": "NEED_NEW_TOOL",
+    "tool_name": "safe_crt_scanline_effect",
+    "description": "需要一个算子来模拟CRT电视效果。增加水平方向的黑色扫描线；产生微小的RGB通道错位(色差)。"
+}}
 ```
         """
         return prompt.strip()
@@ -164,9 +196,17 @@ def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
                 llm_response += chunk
         
         # 提取并清洗代码块
-        code = self._extract_code_block(llm_response)
-        logger.info(f"成功生成代码：\n{code}")
-        yield 'FINISH', code
+        try:
+            code = self._extract_code_block(llm_response)
+            logger.info(f"成功生成代码：\n{code}")
+            yield 'FINISH', code
+        except:
+            try:
+                res_json = self._extract_json(llm_response)
+                logger.info(f"要求生成工具：\n{res_json}")
+                yield 'FINISH', res_json
+            except:
+                raise RuntimeError("LLM 回复既不包含合法的 JSON 工具请求，也未包含合法的 process 函数代码块")
 
     def generate_code(self, 
         user_intent: str = '', 
@@ -189,11 +229,19 @@ def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
         ))
         
         # 提取并清洗代码块
-        code = self._extract_code_block(llm_response)
-        logger.info(f"成功生成代码：\n{code}")
-        return code
+        try:
+            code = self._extract_code_block(llm_response)
+            logger.info(f"成功生成代码：\n{code}")
+            return code
+        except:
+            try:
+                res_json = self._extract_json(llm_response)
+                logger.info(f"要求生成工具：\n{res_json}")
+                return res_json
+            except:
+                raise RuntimeError("LLM 回复既不包含合法的 JSON 工具请求，也未包含合法的 process 函数代码块")
 
-    def execute(self, user_intent: str = '', init_details: str = '', previous_errors: str = None) -> str:
+    def execute(self, user_intent: str = '', init_details: str = '', previous_errors: str = None) -> str | dict:
         """
         实现父类BaseAgent的抽象execute方法，作为Agent对外的统一执行入口
         
@@ -213,7 +261,7 @@ def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
         user_intent: str = '', 
         init_details: str = '', 
         previous_errors: str = None
-    ) -> Generator[tuple[str, str], None, None]:
+    ) -> Generator[tuple[str, str | dict], None, None]:
         """
         :return STREAM.REASONING: 流式返回思考内容
         :return STREAM.CONENT: 流式返回正文内容
