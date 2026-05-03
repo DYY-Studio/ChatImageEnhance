@@ -306,7 +306,7 @@ user_feedback = st.chat_input(
 if upload and selected_model:
     if not st.session_state['messages']:
         start_analyze = False
-        if st.button("💡 不知如何描述？让 AI 分析", key="ai_planner_btn", use_container_width=True, disabled=start_analyze):
+        if st.button("💡 不知如何描述？让 AI 分析", key="ai_planner_btn", width='stretch', disabled=start_analyze):
             start_analyze = True
             # 1. 模拟用户发起了分析请求
             st.session_state.messages.append({"role": "user", "content": "请帮我分析这张图像的问题，并给出增强建议。"})

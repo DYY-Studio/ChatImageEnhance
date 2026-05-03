@@ -129,9 +129,9 @@ class StOptunaCallbackImg:
         with comp_tab1:
             self._render_side_by_side(original_img_bytes, enhanced_img_bytes, original_caption, enhanced_caption)
         with comp_tab2:
-            st.image(original_img_bytes, caption=original_caption, use_container_width=True)
+            st.image(original_img_bytes, caption=original_caption, width='stretch')
         with comp_tab3:
-            st.image(enhanced_img_bytes, caption=enhanced_caption, use_container_width=True)
+            st.image(enhanced_img_bytes, caption=enhanced_caption, width='stretch')
 
 
     def _render_side_by_side(self, 
@@ -141,8 +141,8 @@ class StOptunaCallbackImg:
         col1, col2 = st.columns(2)
         
         with col1:
-            st.image(original_img_bytes, caption=original_caption, use_container_width=True)
+            st.image(original_img_bytes, caption=original_caption, width='stretch')
         
         with col2:
-            st.image(enhanced_img_bytes, caption=enhanced_caption, use_container_width=True)
+            st.image(enhanced_img_bytes, caption=enhanced_caption, width='stretch')
 
