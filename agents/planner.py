@@ -1,7 +1,6 @@
 from agents.base_agent import BaseAgent
-from tools import global_registry
 
-from typing import Generator
+from typing import Generator, Literal
 
 import logging
 import numpy as np  
@@ -9,9 +8,14 @@ import numpy as np
 logger = logging.getLogger("PlannerAgent")
 
 class PlannerAgent(BaseAgent):
-    def __init__(self, llm_client, model_name: str):
-        super().__init__(llm_client, model_name, self._build_system_prompt(), temperature=0.1)
-        self.tool_registry = global_registry
+    def __init__(self, 
+        llm_client, 
+        model_name: str = "gpt-4o-mini", 
+        temperature: float = 0.1,
+        reasoning_effort: Literal["minimal", "low", "medium", "high"] = "minimal",
+        **kwargs
+    ):
+        super().__init__(llm_client, model_name, self._build_system_prompt(), temperature, reasoning_effort, **kwargs)
 
     def _build_system_prompt(self) -> str:
         return """

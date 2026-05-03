@@ -9,7 +9,7 @@ import openai
 import ast
 
 from PIL import Image
-from typing import Any, Optional, Generator
+from typing import Any, Optional, Generator, Literal
 
 # 配置简单的日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -21,7 +21,14 @@ class BaseAgent:
 
     负责：LLM 通信接口、容错重试、JSON 清洗与提取。
     """
-    def __init__(self, llm_client: openai.OpenAI, model_name: str, system_prompt: str, temperature: float = 0.2):
+    def __init__(self, 
+        llm_client: openai.OpenAI, 
+        model_name: str, 
+        system_prompt: str, 
+        temperature: float = 0.1,
+        reasoning_effort: Literal["minimal", "low", "medium", "high"] = "minimal",
+        **kwargs
+    ):
         """
         初始化 Agent
 
@@ -34,6 +41,8 @@ class BaseAgent:
         self.model_name = model_name
         self.system_prompt = system_prompt
         self.temperature = temperature
+        self.reasoning_effort = reasoning_effort
+        self.kwargs = kwargs
 
     def _generate_messages(self, user_prompt: str, imgs: list[np.ndarray | Image.Image] | None = None):
         user_content = []
@@ -98,6 +107,8 @@ class BaseAgent:
                     model=self.model_name,
                     messages=self._generate_messages(user_prompt, imgs),
                     temperature=self.temperature,
+                    reasoning_effort=self.reasoning_effort
+                    **self.kwargs
                     # response_format={ "type": "json_object" } # 如果模型支持强制 JSON 模式，可以开启
                 )
                 return response.choices[0].message.content
@@ -134,6 +145,8 @@ class BaseAgent:
                     model=self.model_name,
                     messages=self._generate_messages(user_prompt, imgs),
                     temperature=self.temperature,
+                    reasoning_effort=self.reasoning_effort,
+                    **self.kwargs,
                     # response_format={ "type": "json_object" } # 如果模型支持强制 JSON 模式，可以开启
                     stream=True
                 )

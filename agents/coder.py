@@ -1,9 +1,8 @@
 from agents.base_agent import BaseAgent
 from tools import global_registry
-from typing import Generator
+from typing import Generator, Literal
 
 import logging
-import re
 
 logger = logging.getLogger("CoderAgent")
 
@@ -18,7 +17,13 @@ class CoderAgent(BaseAgent):
     - 使用 trial.suggest_* 方法定义可调参的超参数（如clahe_clip、ksize等）
     - 最终返回处理后的图像数组
     """
-    def __init__(self, llm_client, model_name: str = "gpt-4o-mini", temperature: float = 0.1):
+    def __init__(self, 
+        llm_client, 
+        model_name: str = "gpt-4o-mini", 
+        temperature: float = 0.1, 
+        reasoning_effort: Literal["minimal", "low", "medium", "high"] = "minimal",
+        **kwargs
+    ):
         """
         初始化编码Agent，继承BaseAgent的LLM通信能力
         
@@ -27,7 +32,7 @@ class CoderAgent(BaseAgent):
         :param temperature: 生成温度，低温度保证代码逻辑稳定性（0.0-0.2为宜）
         """
         # 调用父类初始化（LLM客户端、模型名、系统提示词、温度）
-        super().__init__(llm_client, model_name, self._build_system_prompt(), temperature)
+        super().__init__(llm_client, model_name, self._build_system_prompt(), temperature, reasoning_effort, **kwargs)
         # 加载全局算子注册表（供Prompt注入可用CV算子信息）
         self.tools = global_registry._tools
         logger.info("CoderAgent 初始化完成，已加载全局算子注册表")

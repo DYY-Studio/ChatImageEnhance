@@ -1,6 +1,5 @@
 from agents.base_agent import BaseAgent
-from tools import global_registry
-from typing import Generator
+from typing import Generator, Literal
 
 import logging
 
@@ -8,7 +7,13 @@ logger = logging.getLogger("ToolMakerAgent")
 
 class ToolMakerAgent(BaseAgent):
 
-    def __init__(self, llm_client, model_name: str = "gpt-4o-mini", temperature: float = 0.1):
+    def __init__(self, 
+        llm_client, 
+        model_name: str = "gpt-4o-mini",
+        temperature: float = 0.1,
+        reasoning_effort: Literal["minimal", "low", "medium", "high"] = "minimal",
+        **kwargs
+    ):
         """
         初始化编码Agent，继承BaseAgent的LLM通信能力
         
@@ -19,19 +24,14 @@ class ToolMakerAgent(BaseAgent):
         # 构造CoderAgent专属的系统提示词，明确代码生成规则
         system_prompt = self._build_system_prompt()
         # 调用父类初始化（LLM客户端、模型名、系统提示词、温度）
-        super().__init__(llm_client, model_name, system_prompt, temperature)
+        super().__init__(llm_client, model_name, system_prompt, temperature, reasoning_effort, **kwargs)
         # 加载全局算子注册表（供Prompt注入可用CV算子信息）
-        self.tools = global_registry._tools
-        logger.info("CoderAgent 初始化完成，已加载全局算子注册表")
 
     def _build_system_prompt(self) -> str:
         """
         构建专属系统提示词，明确代码生成的硬性规则和格式要求
         核心原则：让LLM生成可直接被Optuna调用、容错性强的process函数
         """
-        # 从全局注册表中提取所有CV算子的Schema（供LLM参考可用函数）
-        tool_schemas = global_registry.get_all_schemas_for_llm()
-      
         prompt = r"""
 # Role (角色设定)
 你是一个世界顶尖的计算机视觉（CV）算法专家和 Python 开发工程师。
