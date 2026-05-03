@@ -204,30 +204,10 @@ if 'best_bgr' not in st.session_state:
 if upload:
     evaluator = Evaluator(img_bgr)
     top_preview_placeholder = st.empty()
-    
-    def update_top_preview():
-        """用于局部刷新顶部图像预览的函数"""
-        with top_preview_placeholder.container():
-            if st.session_state['best_bgr'] is not None:
-                st.subheader("当前优化进度")
-                # advance_tab, side_by_side_tab = st.tabs(["高级", "并列"])
-                # with advance_tab:
-                image_comparison(
-                    get_thumbnail_img_base64_wrapper(img_bgr),
-                    get_thumbnail_img_base64_wrapper(st.session_state['best_bgr']),
-                    "原图",
-                    "最新"
-                )
-                # with side_by_side_tab:
-                #     c1, c2 = st.columns(2)
-                #     with c1: st.image(img_bgr_preview_bytes, caption="原图", width="stretch")
-                #     with c2: st.image(get_thumbnail_img_wrapper(st.session_state['best_bgr']), caption="当前最新增强结果", width="stretch")
-                st.divider()
-            else:
-                st.subheader("原图")
-                st.image(img_bgr_preview_bytes, width="stretch")
-    
-    update_top_preview()
+
+    st.subheader("原图")
+    st.image(img_bgr_preview_bytes, width="stretch")
+    st.divider()
 else:
     st.session_state.messages.clear()
     st.session_state['best_bgr'] = None
@@ -610,4 +590,3 @@ if user_feedback:
             st.session_state.messages.append(new_msg)
 
             render_message_content(new_msg, len(st.session_state.messages) - 1)
-            update_top_preview()
