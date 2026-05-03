@@ -20,8 +20,9 @@ class BayesianOptimizer:
         code_str: str, 
         evaluate_code_str: str,
         base_img: np.ndarray, 
+        orig_img: np.ndarray,
         n_trials: int = 30, 
-        callbacks: Iterable[Callable[[optuna.study.Study, optuna.trial.FrozenTrial], None]] | None = None
+        callbacks: Iterable[Callable[[optuna.study.Study, optuna.trial.FrozenTrial], None]] | None = None,
     ) -> dict:
         """
         针对固定的代码拓扑，运行 Optuna 寻找最优参数。
@@ -49,7 +50,9 @@ class BayesianOptimizer:
             return {
                 "best_score": study.best_value,
                 "best_params": study.best_params,
-                "best_img": self.executor.execute_pipeline_direct(code_str, base_img, study.best_params)
+                "best_img": self.executor.execute_pipeline_direct(
+                    code_str, orig_img, self.study.best_params
+                )
             }
         except:
             return {
@@ -62,21 +65,28 @@ class BayesianOptimizer:
         code_str: str, 
         evaluate_code_str: str,
         base_img: np.ndarray, 
+        orig_img: np.ndarray,
         best_queue: Queue,
         n_trials: int = 30, 
-        callbacks: Iterable[Callable[[optuna.study.Study, optuna.trial.FrozenTrial], None]] | None = None
+        callbacks: Iterable[Callable[[optuna.study.Study, optuna.trial.FrozenTrial], None]] | None = None,
     ) -> dict:
         """
         针对固定的代码拓扑，运行 Optuna 寻找最优参数。
 
         返回（暂定）: {'best_score': float, 'best_params': dict, 'best_img': np.ndarray}
         """
+
+        logger.info(f"BASE: {base_img.shape[1]}x{base_img.shape[0]}")
+        if orig_img is not None:
+            logger.info(f"ORIG: {base_img.shape[1]}x{base_img.shape[0]}")
+
         def objective(trial: optuna.trial.Trial):
+            nonlocal code_str, evaluate_code_str, base_img
             try:
                 result_img = self.executor.execute_pipeline(code_str, base_img, trial)
                 score = self.executor.execute_evaluate(evaluate_code_str, result_img, base_img)
                 
-                if score <= -9999.0: 
+                if score <= -5000.0: 
                     raise optuna.TrialPruned()
                 study = trial.study
                 try:
@@ -97,7 +107,9 @@ class BayesianOptimizer:
             return {
                 "best_score": self.study.best_value,
                 "best_params": self.study.best_params,
-                "best_img": self.executor.execute_pipeline_direct(code_str, base_img, self.study.best_params)
+                "best_img": self.executor.execute_pipeline_direct(
+                    code_str, orig_img, self.study.best_params
+                )
             }
         except:
             return {
