@@ -7,7 +7,6 @@ import yaml
 from openai import OpenAI, DefaultHttpxClient
 from queue import Queue
 from streamlit_local_storage import LocalStorage
-from streamlit_image_comparison import image_comparison
 
 from core.orchestrator import Orchestrator
 from core.evaluator import Evaluator
@@ -21,6 +20,7 @@ from agents.toolmaker import ToolMakerAgent
 from components.optuna_callbacks import StOptunaCallbackImg
 from components.tool_search import StSearch
 from components.llm_response_handler import StStreamResHandler
+from components.image_comparison import image_comparison
 
 from utils import *
 
@@ -125,6 +125,7 @@ with st.sidebar:
         def clear_img_cache():
             get_thumbnail_img_rgb_array.clear()
             get_thumbnail_img.clear()
+            get_thumbnail_img_base64.clear()
 
         preview_img_max_side = st.slider(
             "预览图像最长边 (px)", 
@@ -178,13 +179,17 @@ with st.sidebar:
 
 upload = st.file_uploader("上传图像", ["png", "jpg", "jpeg"])
     
-def get_thumbnail_img_wrapper(raw_array: np.ndarray):
+def get_thumbnail_img_wrapper(raw_array: np.ndarray) -> bytes | None:
     global preview_img_max_side, preview_img_scale
     return get_thumbnail_img(raw_array, preview_img_max_side, preview_img_scale)
 
-def get_thumbnail_img_rgb_array_wrapper(raw_array: np.ndarray):
+def get_thumbnail_img_rgb_array_wrapper(raw_array: np.ndarray) -> np.ndarray:
     global preview_img_max_side, preview_img_scale
     return get_thumbnail_img_rgb_array(raw_array, preview_img_max_side, preview_img_scale)
+
+def get_thumbnail_img_base64_wrapper(raw_array: np.ndarray) -> str | None:
+    global preview_img_max_side, preview_img_scale
+    return get_thumbnail_img_base64(raw_array, preview_img_max_side, preview_img_scale)
 
 if upload:
     img_bgr = load_bgr_img_from_file(upload)
@@ -208,8 +213,8 @@ if upload:
                 # advance_tab, side_by_side_tab = st.tabs(["高级", "并列"])
                 # with advance_tab:
                 image_comparison(
-                    get_thumbnail_img_rgb_array_wrapper(img_bgr),
-                    get_thumbnail_img_rgb_array_wrapper(st.session_state['best_bgr']),
+                    get_thumbnail_img_base64_wrapper(img_bgr),
+                    get_thumbnail_img_base64_wrapper(st.session_state['best_bgr']),
                     "原图",
                     "最新"
                 )
@@ -252,8 +257,8 @@ def render_message_content(msg, index):
                 comp_target = st.radio("对比对象", ["原图", "上一轮"], horizontal=True)
 
             image_comparison(
-                get_thumbnail_img_rgb_array_wrapper(img_bgr) if comp_target == "原图" else get_thumbnail_img_rgb_array_wrapper(prev_image),
-                get_thumbnail_img_rgb_array_wrapper(st.session_state['best_bgr']),
+                get_thumbnail_img_base64_wrapper(img_bgr) if comp_target == "原图" else get_thumbnail_img_base64_wrapper(prev_image),
+                get_thumbnail_img_base64_wrapper(st.session_state['best_bgr']),
                 comp_target,
                 "最新"
             )
