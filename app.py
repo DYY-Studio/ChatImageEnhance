@@ -235,10 +235,28 @@ def get_previous_img(curr_idx: int, ignore_test_mode: bool = True):
                 break
     return prev_image
 
-def render_message_content(msg, index):
+def delete_message(idx: int, target_only: bool = False):
+    msgs: list = st.session_state.messages
+    if not target_only:
+        target_msg = msgs[idx]
+        if target_msg['role'] == "user":
+            if len(msgs) > idx + 1 and msgs[idx + 1]['role'] == "assistant":
+                msgs.pop(idx + 1)
+            msgs.pop(idx)
+        elif target_msg['role'] == "assistant":
+            msgs.pop(idx)
+            if idx > 0 and msgs[idx - 1]['role'] == "user":
+                msgs.pop(idx - 1)
+    else:
+        msgs.pop(idx)
+
+def render_message_content(msg, index: int):
     """提取内部渲染逻辑，供历史记录与最新消息复用"""
     st.markdown(msg["content"])
-    if "image" in msg:
+    if "image" not in msg:
+        if st.button("🚮 删除本轮对话", on_click=delete_message, args=[index], key=f"del_btn_{id(msg)}_{index}"):
+            st.rerun()
+    else:
         prev_image = get_previous_img(index, ignore_test_mode=False)
 
         with st.container(border=True):
@@ -262,9 +280,11 @@ def render_message_content(msg, index):
             
             with st.expander("Optuna 最优参数组合"):
                 st.json(msg.get("best_params", {}))
-        
-        btn_col1, btn_col2 = st.columns(2)
-        with btn_col1:
+
+        with st.container(horizontal=True):
+            if st.button("🚮 删除本轮对话", on_click=delete_message, args=[index], key=f"del_btn_{id(msg)}_{index}"):
+                st.rerun()
+
             succ, enc_img_bytes = get_encoded_img(msg["image"])
             if succ:
                 st.download_button(
@@ -277,7 +297,6 @@ def render_message_content(msg, index):
             else:
                 st.button("📥 保存此版本", disabled=True)
             
-        with btn_col2:
             if "new_tool" in msg and msg["new_tool"]:
                 def save_tool(tool: dict):
                     custom_tool_dir = get_executable_dir() / "tools/custom"
