@@ -1,5 +1,5 @@
 from agents.base_agent import BaseAgent
-from typing import Generator
+from typing import Generator, Literal
 
 from github import Github
 from github.ContentFile import ContentFile
@@ -11,7 +11,14 @@ logger = logging.getLogger("SearcherAgent")
 
 class SearcherAgent(BaseAgent):
 
-    def __init__(self, llm_client, model_name: str = "gpt-4o-mini", github_client: Github | None = None, temperature: float = 0.1):
+    def __init__(self, 
+        llm_client, 
+        model_name: str = "gpt-4o-mini", 
+        github_client: Github | None = None, 
+        temperature: float = 0.1,
+        reasoning_effort: Literal["minimal", "low", "medium", "high"] = "minimal",
+        **kwargs
+    ):
         """
         初始化编码Agent，继承BaseAgent的LLM通信能力
         
@@ -23,7 +30,7 @@ class SearcherAgent(BaseAgent):
         # 构造CoderAgent专属的系统提示词，明确代码生成规则
         system_prompt = self._build_system_prompt()
         # 调用父类初始化（LLM客户端、模型名、系统提示词、温度）
-        super().__init__(llm_client, model_name, system_prompt, temperature)
+        super().__init__(llm_client, model_name, system_prompt, temperature, reasoning_effort, **kwargs)
 
         self.github_client = github_client
         github_client.per_page = 10

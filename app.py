@@ -45,6 +45,8 @@ if 'proxy_url' not in st.session_state:
     st.session_state['proxy_url'] = localS.getItem('proxy_url') or ""
 if 'github_token' not in st.session_state:
     st.session_state['github_token'] = localS.getItem('github_token') or ""
+if 'reasoning_effort' not in st.session_state:
+    st.session_state['reasoning_effort'] = None
 
 @st.cache_resource
 def get_openai_client(base_url: str, api_key: str, proxy_url: str):
@@ -120,6 +122,14 @@ with st.sidebar:
         # 如果选择了无模型选项，将selected_model设为None
         if selected_model == "无模型 (测试模式)":
             selected_model = None
+
+        with st.expander("高级"):
+            reasoning_effort = st.selectbox(
+                "推理努力 Reasoning Effort", ['default', 'minimal', 'low', 'medium', 'high']
+            )
+            if reasoning_effort == "default":
+                reasoning_effort = None
+            st.session_state['reasoning_effort'] = reasoning_effort
 
     with st.expander("预览"):
         def clear_img_cache():
@@ -319,7 +329,7 @@ if upload and selected_model:
             with st.chat_message("assistant"):
                 with st.status("🔎 AI 正在分析图像客观指标与视觉问题...", expanded=True) as plan_status:
                     client = get_openai_client(st.session_state.api_url, st.session_state.api_key, st.session_state.proxy_url)
-                    planner = PlannerAgent(client, selected_model)
+                    planner = PlannerAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort)
                     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
                     
                     analyze_result = {}
@@ -439,9 +449,9 @@ if user_feedback:
 
         client = get_openai_client(st.session_state.api_url, st.session_state.api_key, st.session_state.proxy_url)
         orch = Orchestrator(
-            CoderAgent(client, selected_model),
-            EvaluatorAgent(client, selected_model),
-            ToolMakerAgent(client, selected_model)
+            CoderAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort),
+            EvaluatorAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort),
+            ToolMakerAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort)
         )
 
         with (main_status := st.status("🛠️ 根据反馈调整并运行...", expanded=True)):
