@@ -126,12 +126,21 @@ with st.sidebar:
             get_thumbnail_img_rgb_array.clear()
             get_thumbnail_img.clear()
 
-        preview_img_max_side = st.slider("预览图像最长边 (px)", 300, 4000, 800, step=25, on_change=clear_img_cache)
+        preview_img_max_side = st.slider(
+            "预览图像最长边 (px)", 
+            300, 4000, 800, step=25, 
+            on_change=clear_img_cache,
+            help="通过缩小预览图像尺寸提高加载速度并降低内存使用"
+        )
 
         inter_mapping = get_cv2_inter_mapping()
         inter_options = list(inter_mapping.keys())
 
-        preview_img_scale = st.selectbox("预览图像缩放算法", inter_options, format_func=inter_mapping.get, on_change=clear_img_cache)
+        preview_img_scale = st.selectbox(
+            "预览图像缩小算法", inter_options, 
+            format_func=inter_mapping.get, 
+            on_change=clear_img_cache
+        )
 
     with st.expander("代码检索", expanded=True):
         st.text("这是什么", help="缺少工具时，使用GitHub REST API检索相关的代码，需要填写Token才能使用")
