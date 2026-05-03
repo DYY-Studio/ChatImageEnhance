@@ -47,6 +47,10 @@ if 'github_token' not in st.session_state:
     st.session_state['github_token'] = localS.getItem('github_token') or ""
 if 'reasoning_effort' not in st.session_state:
     st.session_state['reasoning_effort'] = None
+if 'process_img_max_side' not in st.session_state:
+    st.session_state['process_img_max_side'] = 1500
+if 'low_res_process' not in st.session_state:
+    st.session_state['low_res_process'] = False
 
 @st.cache_resource
 def get_openai_client(base_url: str, api_key: str, proxy_url: str):
@@ -58,10 +62,10 @@ def get_openai_client(base_url: str, api_key: str, proxy_url: str):
                         proxy=proxy_url
                     )
                 )
-                return OpenAI(base_url=base_url, api_key=api_key, max_retries=0, http_client=client)
+                return OpenAI(base_url=base_url, api_key=api_key, max_retries=0, http_client=client, timeout=20.0)
             except Exception as e:
                print(e)
-        return OpenAI(base_url=base_url, api_key=api_key, max_retries=0)
+        return OpenAI(base_url=base_url, api_key=api_key, max_retries=0, timeout=20.0)
     except Exception as e:
         print(e)
         return None
@@ -131,7 +135,7 @@ with st.sidebar:
                 reasoning_effort = None
             st.session_state['reasoning_effort'] = reasoning_effort
 
-    with st.expander("预览"):
+    with st.expander("预览", expanded=True):
         def clear_img_cache():
             get_thumbnail_img_rgb_array.clear()
             get_thumbnail_img.clear()
@@ -166,11 +170,23 @@ with st.sidebar:
         )
     
     with st.expander("处理", expanded=True):
+        n_trials = st.slider("优化轮数", 5, 150, 15)
         step_by_step = st.toggle(
-            "处理时基于上一轮图像",
+            "基于上一轮图像而非原图",
             help="不勾选时每次处理均在原图上进行，勾选后则对上一轮结果进行"
         )
-        n_trials = st.slider("优化轮数", 5, 150, 15)
+        low_res_process = st.toggle(
+            "使用低分辨率图像调优",
+            help="使用低分辨率图像调优以提高速度，但可能影响最终效果",
+            key="low_res_process"
+        )
+        if low_res_process:
+            with st.container(border=True):
+                process_img_max_side = st.slider(
+                    "图像最长边 (px)", 
+                    600, 4000, 1500, step=25,
+                    key="process_img_max_side"
+                )
 
     if (cache_api := fetch_button and st.session_state.models) or github_token:
         with st.container(height=1, border=False):
@@ -201,6 +217,15 @@ def get_thumbnail_img_base64_wrapper(raw_array: np.ndarray) -> str | None:
     global preview_img_max_side, preview_img_scale
     return get_thumbnail_img_base64(raw_array, preview_img_max_side, preview_img_scale)
 
+def get_thumbnail_size(raw_array: np.ndarray) -> tuple[int, int]:
+    global preview_img_max_side
+    h, w = raw_array.shape[:2]
+    current_max = max(h, w)
+    if current_max > preview_img_max_side:
+        scale = preview_img_max_side / current_max
+        return (int(w * scale), int(h * scale))
+    return (w, h)
+
 if upload:
     img_bgr = load_bgr_img_from_file(upload)
     img_bgr_preview_bytes = get_thumbnail_img_wrapper(img_bgr)
@@ -216,7 +241,10 @@ if upload:
     top_preview_placeholder = st.empty()
 
     st.subheader("原图")
-    st.image(img_bgr_preview_bytes, width="stretch")
+    st.image(
+        img_bgr_preview_bytes, width="stretch", 
+        caption=f"{img_bgr.shape[1]}x{img_bgr.shape[0]}, {img_bgr.shape[2]} Channel(s)"
+    )
     st.divider()
 else:
     st.session_state.messages.clear()
@@ -241,9 +269,13 @@ def delete_message(idx: int, target_only: bool = False):
         target_msg = msgs[idx]
         if target_msg['role'] == "user":
             if len(msgs) > idx + 1 and msgs[idx + 1]['role'] == "assistant":
+                if len(msgs) == idx + 2 and 'image' in msgs[idx + 1]:
+                    st.session_state['best_bgr'] = get_previous_img(idx + 1)
                 msgs.pop(idx + 1)
             msgs.pop(idx)
         elif target_msg['role'] == "assistant":
+            if len(msgs) == idx + 1 and 'image' in target_msg:
+                st.session_state['best_bgr'] = get_previous_img(idx)
             msgs.pop(idx)
             if idx > 0 and msgs[idx - 1]['role'] == "user":
                 msgs.pop(idx - 1)
@@ -267,6 +299,7 @@ def render_message_content(msg, index: int):
             image_comparison(
                 get_thumbnail_img_base64_wrapper(img_bgr) if comp_target == "原图" else get_thumbnail_img_base64_wrapper(prev_image),
                 get_thumbnail_img_base64_wrapper(st.session_state['best_bgr']),
+                get_thumbnail_size(st.session_state['best_bgr']),
                 comp_target,
                 "最新"
             )
@@ -468,7 +501,7 @@ if user_feedback:
 
         client = get_openai_client(st.session_state.api_url, st.session_state.api_key, st.session_state.proxy_url)
         orch = Orchestrator(
-            CoderAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort),
+            CoderAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort, low_res=low_res_process),
             EvaluatorAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort),
             ToolMakerAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort)
         )
@@ -492,7 +525,9 @@ if user_feedback:
                 n_trials, 
                 progress_bar, status_text, table_placeholder, 
                 best_img, best_queue,
-                prev_img_bgr or img_bgr, prev_img_bgr is None, preview_img_max_side, preview_img_scale
+                prev_img_bgr if prev_img_bgr is not None else img_bgr, 
+                prev_img_bgr is None, 
+                preview_img_max_side, preview_img_scale
             )
 
             best_bgr, best_params, log = None, None, None
@@ -525,14 +560,17 @@ if user_feedback:
                 search_result = dict()
                 coder_handler = StStreamResHandler(code_status, code_thinking_container)
 
+                img_to_process = st.session_state['best_bgr'] if step_by_step and st.session_state['best_bgr'] is not None else img_bgr
+
                 orch.coder.rebuild_system_prompt()
                 for t, body in orch.process_stream(
-                    image=st.session_state['best_bgr'] if step_by_step and st.session_state['best_bgr'] else img_bgr,
+                    image=img_to_process,
                     evaluate_code_str=evaluate_code_str,
                     best_queue=best_queue,
                     user_prompt=generate_user_prompt(True, True, step_by_step),
                     n_trials=n_trials,
-                    callbacks=[callback]
+                    callbacks=[callback],
+                    max_side=process_img_max_side if low_res_process else 0
                 ):
                     if t == "CODE.START":
                         pass
