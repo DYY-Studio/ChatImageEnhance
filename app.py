@@ -7,6 +7,7 @@ import yaml
 from openai import OpenAI, DefaultHttpxClient
 from queue import Queue
 from streamlit_local_storage import LocalStorage
+from typing import BinaryIO
 
 from core.orchestrator import Orchestrator
 from core.evaluator import Evaluator
@@ -83,6 +84,14 @@ st.title("✨ ChatImageEnhance")
 st.caption("LLM Agent + Optuna 人类在环图像增强系统")
 st.divider()
 
+@st.cache_resource
+def get_cv2_inter_mapping() -> dict[int, str]:
+    return {
+        getattr(cv2, name): name
+        for name in dir(cv2) 
+        if name.startswith('INTER_') and not any(x in name for x in ['MAX', 'TAB', 'BITS'])
+    }
+
 with st.sidebar:
     st.header("设置")
     with st.expander("模型", expanded=True):
@@ -99,11 +108,26 @@ with st.sidebar:
         fetch_button = st.button("获取模型列表", disabled = True if not api_url else False, width="stretch")
         if fetch_button:
             get_models()
+        
+        # 添加无模型选项用于测试
+        model_options = ["无模型 (测试模式)"] + (st.session_state.models or [])
         selected_model = st.selectbox(
             "模型", 
-            options = st.session_state.models,
-            index = 0 if st.session_state.models else None
+            options = model_options,
+            index = 0
         )
+        
+        # 如果选择了无模型选项，将selected_model设为None
+        if selected_model == "无模型 (测试模式)":
+            selected_model = None
+
+    with st.expander("预览"):
+        preview_img_max_side = st.slider("预览图像最长边 (px)", 300, 4000, 800, step=25)
+
+        inter_mapping = get_cv2_inter_mapping()
+        inter_options = list(inter_mapping.keys())
+
+        preview_img_scale = st.selectbox("预览图像缩放算法", inter_options, format_func=inter_mapping.get)
 
     with st.expander("代码检索", expanded=True):
         st.text("这是什么", help="缺少工具时，使用GitHub REST API检索相关的代码，需要填写Token才能使用")
@@ -141,9 +165,36 @@ with st.sidebar:
 
 upload = st.file_uploader("上传图像", ["png", "jpg", "jpeg"])
 
+@st.cache_data
+def load_bgr_img_from_file(file: BinaryIO) -> np.ndarray:
+    file_bytes = np.asarray(bytearray(file.read()), dtype=np.uint8)
+    return cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+
+@st.cache_data
+def get_encoded_img(raw_array: np.ndarray) -> bytes:
+    succ, enc_img = cv2.imencode('.png', raw_array, [cv2.IMWRITE_PNG_COMPRESSION, 2])
+    return succ, enc_img.tobytes()
+
+@st.cache_data
+def get_thumbnail_img(raw_array: np.ndarray, max_side: int = 800, interpolation: int = cv2.INTER_LANCZOS4) -> bytes:
+    h, w = raw_array.shape[:2]
+    current_max = max(h, w)
+    if current_max > max_side:
+        scale = max_side / current_max
+        resized_array = cv2.resize(raw_array, (int(w * scale), int(h * scale)), interpolation=interpolation)
+    else:
+        resized_array = raw_array
+    succ, enc_img = cv2.imencode('.jpg', resized_array, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    if succ:
+        return enc_img.tobytes()
+    
+def get_thumbnail_img_wrapper(raw_array: np.ndarray):
+    global preview_img_max_side, preview_img_scale
+    return get_thumbnail_img(raw_array, preview_img_max_side)
+
 if upload:
-    file_bytes = np.asarray(bytearray(upload.read()), dtype=np.uint8)
-    img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+    img_bgr = load_bgr_img_from_file(upload)
+    img_bgr_preview_bytes = get_thumbnail_img_wrapper(img_bgr)
 
 if 'messages' not in st.session_state:
     st.session_state['messages'] = []
@@ -161,28 +212,53 @@ if upload:
             if st.session_state['best_bgr'] is not None:
                 st.subheader("当前优化进度")
                 c1, c2 = st.columns(2)
-                with c1: st.image(img_bgr, caption="原图", channels="BGR")
-                with c2: st.image(st.session_state['best_bgr'], caption="当前最新增强结果", channels="BGR")
+                with c1: st.image(img_bgr_preview_bytes, caption="原图")
+                with c2: st.image(get_thumbnail_img_wrapper(st.session_state['best_bgr']), caption="当前最新增强结果")
                 st.divider()
             else:
                 st.subheader("原图")
-                st.image(img_bgr, width="stretch", channels="BGR")
+                st.image(img_bgr_preview_bytes, width="stretch")
     
     update_top_preview()
 else:
     st.session_state.messages.clear()
     st.session_state['best_bgr'] = None
 
-@st.cache_data
-def get_encoded_img(raw_array: np.ndarray):
-    succ, enc_img = cv2.imencode('.png', raw_array, [cv2.IMWRITE_PNG_COMPRESSION, 2])
-    return succ, enc_img.tobytes()
-
 def render_message_content(msg, index):
     """提取内部渲染逻辑，供历史记录与最新消息复用"""
     st.markdown(msg["content"])
     if "image" in msg:
-        st.image(msg["image"], channels="BGR", caption="此轮优化结果")
+        prev_image = None
+        if index > 0:
+            # 向前查找最近一个包含图像的assistant消息
+            for i in range(index - 1, -1, -1):
+                prev_msg = st.session_state.messages[i]
+                if prev_msg["role"] == "assistant" and "image" in prev_msg:
+                    prev_image = prev_msg["image"]
+                    break
+
+        with st.container(border=True):
+            
+            if prev_image is not None:
+                c1tab1, c1tab2 = st.tabs(["原图", "上一轮"])
+                with c1tab1:
+                    img_preview_c1, img_preview_c2 = st.columns(2)
+                    with img_preview_c1: 
+                        st.image(img_bgr_preview_bytes, caption="原图")
+                    with img_preview_c2: 
+                        st.image(get_thumbnail_img_wrapper(msg["image"]), caption="此轮优化结果")
+                with c1tab2:
+                    img_preview2_c1, img_preview2_c2 = st.columns(2)
+                    with img_preview2_c1: 
+                        st.image(get_thumbnail_img_wrapper(prev_image), caption="上一轮优化结果")
+                    with img_preview2_c2: 
+                        st.image(get_thumbnail_img_wrapper(msg["image"]), caption="此轮优化结果")
+            else:
+                img_preview_c1, img_preview_c2 = st.columns(2)
+                with img_preview_c1: 
+                    st.image(img_bgr_preview_bytes, caption="原图")
+                with img_preview_c2: 
+                    st.image(get_thumbnail_img_wrapper(msg["image"]), caption="此轮优化结果")
 
         with st.expander("🛠️ 查看此轮生成的代码与最优参数"):
             with st.expander("评价逻辑 (Evaluation Code)"):
@@ -209,7 +285,7 @@ def render_message_content(msg, index):
                 st.button("📥 保存此版本", disabled=True)
             
         with btn_col2:
-            if msg["new_tool"]:
+            if "new_tool" in msg and msg["new_tool"]:
                 def save_tool(tool: dict):
                     custom_tool_dir = get_executable_dir() / "tools/custom"
                     custom_tool_dir.mkdir(parents=True, exist_ok=True)
@@ -243,10 +319,10 @@ for i, msg in enumerate(st.session_state.messages):
 
 user_feedback = st.chat_input(
     '描述你的增强要求或对上轮结果的反馈\n（例如："这张图有些模糊，给我锐化一下" 或 "这版锐化过度了，稍微柔和一点"）', 
-    disabled=not selected_model
+    disabled=not upload
 )
 
-if upload and selected_model:
+if upload:
     if not st.session_state['messages']:
         start_analyze = False
         if st.button("💡 不知如何描述？让 AI 分析", key="ai_planner_btn", use_container_width=True, disabled=start_analyze):
@@ -304,13 +380,15 @@ if user_feedback:
     if not upload:
         st.warning("请先上传图片")
         st.stop()
-    if not api_url:
+    
+    # 如果选择了模型但没有配置API URL，则警告
+    if selected_model and not api_url:
         st.warning("请输入API URL")
         st.stop()
-    if not selected_model:
-        st.warning("未选择使用的模型")
-        st.stop()
-
+    
+    if selected_model is None:
+        pass
+    
     # 1. 记录人类用户的输入
     user_feedback_msg = {"role": "user", "content": user_feedback}
     st.session_state.messages.append(user_feedback_msg)
@@ -321,7 +399,7 @@ if user_feedback:
         last_assistant_msg = next(
             (
                 m for m in reversed(st.session_state.messages[:-1]) 
-                if m['role'] == 'assistant' and "image" in m
+                if m['role'] == 'assistant' and "image" in m and "test_mode" not in m
             ), 
             None
         )
@@ -350,6 +428,31 @@ if user_feedback:
     # 2. 启动智能体响应
     with st.chat_message("assistant"):
         # 整合上下文策略：将初始目标、历史反馈和当前诉求组装给 LLM
+
+        # 检查是否为无模型测试模式
+        if not selected_model:
+            st.info("🧪 当前处于【无模型测试模式】，直接返回原图。")
+            
+            # 直接使用原图作为"增强结果"
+            best_bgr = img_bgr.copy()
+            best_params = {"mode": "test_no_llm", "info": "无模型测试模式，未进行任何处理"}
+            
+            # 更新会话状态
+            st.session_state['best_bgr'] = best_bgr
+            
+            # 将系统的回应和新图像记入历史记录
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": "✅ 【测试模式】已返回原图。请选择一个有效的模型以启用真正的 AI 图像增强功能。",
+                "image": best_bgr,
+                "eval_code": "# 无模型测试模式，未生成评价代码",
+                "process_code": "# 无模型测试模式，未生成处理代码",
+                "best_params": best_params,
+                "new_tool": None,
+                "test_mode": True
+            })
+            
+            st.rerun()
 
         client = get_openai_client(st.session_state.api_url, st.session_state.api_key, st.session_state.proxy_url)
         orch = Orchestrator(
