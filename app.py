@@ -22,7 +22,7 @@ from components.optuna_callbacks import StOptunaCallbackImg
 from components.tool_search import StSearch
 from components.llm_response_handler import StStreamResHandler
 
-from utils import get_executable_dir
+from utils import *
 
 localS = LocalStorage()
 
@@ -164,29 +164,6 @@ with st.sidebar:
             elif localS.getItem("github_token"): localS.deleteItem("github_token", "del_locals_github_token")
 
 upload = st.file_uploader("上传图像", ["png", "jpg", "jpeg"])
-
-@st.cache_data
-def load_bgr_img_from_file(file: BinaryIO) -> np.ndarray:
-    file_bytes = np.asarray(bytearray(file.read()), dtype=np.uint8)
-    return cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-
-@st.cache_data
-def get_encoded_img(raw_array: np.ndarray) -> bytes:
-    succ, enc_img = cv2.imencode('.png', raw_array, [cv2.IMWRITE_PNG_COMPRESSION, 2])
-    return succ, enc_img.tobytes()
-
-@st.cache_data
-def get_thumbnail_img(raw_array: np.ndarray, max_side: int = 800, interpolation: int = cv2.INTER_LANCZOS4) -> bytes:
-    h, w = raw_array.shape[:2]
-    current_max = max(h, w)
-    if current_max > max_side:
-        scale = max_side / current_max
-        resized_array = cv2.resize(raw_array, (int(w * scale), int(h * scale)), interpolation=interpolation)
-    else:
-        resized_array = raw_array
-    succ, enc_img = cv2.imencode('.jpg', resized_array, [cv2.IMWRITE_JPEG_QUALITY, 95])
-    if succ:
-        return enc_img.tobytes()
     
 def get_thumbnail_img_wrapper(raw_array: np.ndarray):
     global preview_img_max_side, preview_img_scale
@@ -224,18 +201,22 @@ else:
     st.session_state.messages.clear()
     st.session_state['best_bgr'] = None
 
+def get_previous_img(curr_idx: int):
+    prev_image = None
+    if curr_idx > 0:
+        # 向前查找最近一个包含图像的assistant消息
+        for i in range(curr_idx - 1, -1, -1):
+            prev_msg = st.session_state.messages[i]
+            if prev_msg["role"] == "assistant" and "image" in prev_msg and "test_mode" not in prev_msg:
+                prev_image = prev_msg["image"]
+                break
+    return prev_image
+
 def render_message_content(msg, index):
     """提取内部渲染逻辑，供历史记录与最新消息复用"""
     st.markdown(msg["content"])
     if "image" in msg:
-        prev_image = None
-        if index > 0:
-            # 向前查找最近一个包含图像的assistant消息
-            for i in range(index - 1, -1, -1):
-                prev_msg = st.session_state.messages[i]
-                if prev_msg["role"] == "assistant" and "image" in prev_msg:
-                    prev_image = prev_msg["image"]
-                    break
+        prev_image = get_previous_img(index)
 
         with st.container(border=True):
             
@@ -322,7 +303,7 @@ user_feedback = st.chat_input(
     disabled=not upload
 )
 
-if upload:
+if upload and selected_model:
     if not st.session_state['messages']:
         start_analyze = False
         if st.button("💡 不知如何描述？让 AI 分析", key="ai_planner_btn", use_container_width=True, disabled=start_analyze):
@@ -475,7 +456,13 @@ if user_feedback:
                 with data_tab: table_placeholder = st.empty()
 
             best_queue = Queue()
-            callback = StOptunaCallbackImg(n_trials, progress_bar, status_text, table_placeholder, best_img, best_queue)
+            prev_img_bgr = get_previous_img(len(st.session_state.messages))
+            callback = StOptunaCallbackImg(
+                n_trials, 
+                progress_bar, status_text, table_placeholder, 
+                best_img, best_queue,
+                prev_img_bgr or img_bgr, prev_img_bgr is None, preview_img_max_side, preview_img_scale
+            )
 
             best_bgr, best_params, log = None, None, None
             evaluate_code_str = ''
