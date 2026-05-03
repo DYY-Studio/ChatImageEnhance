@@ -1,6 +1,8 @@
 import numpy as np
 import traceback
 import optuna
+import cv2
+import logging
 
 from agents.evaluator import EvaluatorAgent
 from agents.coder import CoderAgent
@@ -13,6 +15,8 @@ from core.optimizer import BayesianOptimizer
 
 from typing import Generator, Callable, Iterable, Literal
 from queue import Queue
+
+logger = logging.getLogger("Orchestrator")
 
 class Orchestrator:
     """
@@ -131,7 +135,8 @@ class Orchestrator:
         user_prompt: str = '', 
         n_trials: int = 30,
         callbacks: Iterable[Callable[[optuna.study.Study, optuna.trial.FrozenTrial], None]] | None = None,
-        error_log: str = ''
+        error_log: str = '',
+        max_side: int = 0
     ) -> Generator[
         tuple[
             Literal[
@@ -182,6 +187,22 @@ class Orchestrator:
         user_prompt = f"{user_prompt}\n\n" if user_prompt else "" 
         
         self.optimizer = BayesianOptimizer(executor=self.executor)
+
+        img_to_opti = None
+        if max_side > 0:
+            h, w = image.shape[:2]
+            if (curr_max_side := max(h, w)) > max_side:
+                scale = max_side / curr_max_side
+                img_to_opti = cv2.resize(
+                    image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA
+                )
+        else:
+            img_to_opti = image
+
+        logger.info(f"调优图像大小: {img_to_opti.shape[1]}x{img_to_opti.shape[0]}, 通道数: {img_to_opti.shape[2]}")
+
+        user_prompt += f"调优图像大小: {img_to_opti.shape[1]}x{img_to_opti.shape[0]}, 通道数: {img_to_opti.shape[2]}"
+
         yield "INIT.FINISH", None
 
         for attempt in range(self.max_llm_retries):
@@ -211,7 +232,8 @@ class Orchestrator:
 
         yield 'OPTUNA.START', None
         optimization_result = self.optimizer.run_inner_loop_stream(
-            code_str, evaluate_code_str, image, best_queue, n_trials, callbacks=callbacks
+            code_str, evaluate_code_str, img_to_opti, image,
+            best_queue, n_trials, callbacks=callbacks, 
         )
         yield 'OPTUNA.END', None
         

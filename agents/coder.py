@@ -22,6 +22,7 @@ class CoderAgent(BaseAgent):
         model_name: str = "gpt-4o-mini", 
         temperature: float = 0.1, 
         reasoning_effort: Literal["minimal", "low", "medium", "high"] = "minimal",
+        low_res: bool = False,
         **kwargs
     ):
         """
@@ -31,10 +32,12 @@ class CoderAgent(BaseAgent):
         :param model_name: 使用的大模型名称，默认gpt-4o-mini（兼顾效率和代码生成能力）
         :param temperature: 生成温度，低温度保证代码逻辑稳定性（0.0-0.2为宜）
         """
+        self.low_res = low_res
         # 调用父类初始化（LLM客户端、模型名、系统提示词、温度）
         super().__init__(llm_client, model_name, self._build_system_prompt(), temperature, reasoning_effort, **kwargs)
         # 加载全局算子注册表（供Prompt注入可用CV算子信息）
         self.tools = global_registry._tools
+        
         logger.info("CoderAgent 初始化完成，已加载全局算子注册表")
 
     def rebuild_system_prompt(self):
@@ -80,6 +83,15 @@ class CoderAgent(BaseAgent):
 * **合理约束**：选择符合描述而适当合理的参数范围，减少 Optuna 调优的搜索量，避免使用过于极端的参数导致图像完全不可用。如果一个参数没有调优的价值，必须使用常数来阻止Optuna调优。
 * **目的单调**：除非用户的指示本身没有方向性，否则避免使用没有明确指向，在特定区间反复震荡的范围（如[-2.0, 2.0]）。
 * **性能考量**：连续使用高开销算子时需要仔细研判，避免流程用时过长。
+{
+    (
+        "* **尺寸相关**: 为了加速优化，该函数将会在缩小尺寸的图像上进行调优，最后应用于高分辨率原图。"
+        "因此，严禁使用绝对像素值作为卷积核大小、面积阈值或距离阈值。"
+        "你必须使用 trial.suggest_float 获取相对比例系数（如占图像宽度的百分比），并在代码内部动态计算出绝对数值"
+        "（例如：area = img.shape[0] * img.shape[1] * trial.suggest_float('area_ratio', ...)）。"
+        "对于颜色阈值等与分辨率无关的参数，可以直接优化。"
+    ) if self.low_res else ""
+}
 
 ### Provided Schema / 算子库文档
 {tool_schemas}

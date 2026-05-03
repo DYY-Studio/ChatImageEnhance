@@ -15,6 +15,7 @@ from typing import Union, Literal
 def image_comparison(
 	img1: Union[str, bytes],
 	img2: Union[str, bytes],
+	img_size: tuple[int, int],
 	label1: str = "1",
 	label2: str = "2",
 	width: Union[int, Literal["stretch", "content"]] = "stretch",
@@ -32,6 +33,8 @@ def image_comparison(
 		Data for the first image.
 	img2: base64 encoded img str
 		Data for the second image.
+	img_size: tuple[int, int]
+		Image size (Width, Height)
 	label1: str, optional
 		Label for the first image. Default is "1".
 	label2: str, optional
@@ -63,30 +66,45 @@ def image_comparison(
 
 	# write html block
 	htmlcode = f"""
-		<style>body {{ margin: unset; }}</style>
-		{css_block}
-		{js_block}
-		<div id="foo" style="width: {css_width}; height: {css_height};"></div>
-		<script>
-		slider = new juxtapose.JXSlider('#foo',
-			[
-				{{
-					src: '{img1}',
-					label: '{label1}',
-				}},
-				{{
-					src: '{img2}',
-					label: '{label2}',
-				}}
-			],
-			{{
-				animate: true,
-				showLabels: {'true' if show_labels else 'false'},
-				showCredits: true,
-				startingPosition: "{starting_position}%",
-				makeResponsive: {'true' if make_responsive else 'false'},
-			}});
-		</script>
+<style>
+	body {{ 
+		margin: 0; 
+		padding: 0; 
+		overflow: hidden;
+	}}
+	/* 强制重写 JuxtaposeJS 的内联固定高度，让它顺从外层比例容器 */
+	#foo {{ 
+		width: {css_width} !important;
+		height: {css_height} !important;
+		aspect-ratio: {img_size[0] / img_size[1]} !important; 
+	}}
+	.jx-slider {{
+		width: 100% !important;
+	}}
+</style>
+{css_block}
+{js_block}
+<div id="foo"></div>
+<script>
+slider = new juxtapose.JXSlider('#foo',
+	[
+		{{
+			src: '{img1}',
+			label: '{label1}',
+		}},
+		{{
+			src: '{img2}',
+			label: '{label2}',
+		}}
+	],
+	{{
+		animate: true,
+		showLabels: {'true' if show_labels else 'false'},
+		showCredits: true,
+		startingPosition: "{starting_position}%",
+		makeResponsive: {'true' if make_responsive else 'false'},
+	}});
+</script>
 		"""
 	static_component = st.iframe(htmlcode, height=height, width=width)
 
