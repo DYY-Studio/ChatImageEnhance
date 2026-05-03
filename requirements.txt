@@ -6,6 +6,7 @@ openai
 pyyaml
 streamlit
 streamlit-local-storage
+streamlit-image-comparison @ git+https://github.com/DYY-Studio/streamlit-image-comparison.git@st_iframe
 scikit-image
 PyGithub
 RestrictedPython

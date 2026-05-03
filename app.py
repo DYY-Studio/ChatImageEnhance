@@ -7,7 +7,7 @@ import yaml
 from openai import OpenAI, DefaultHttpxClient
 from queue import Queue
 from streamlit_local_storage import LocalStorage
-from typing import BinaryIO
+from streamlit_image_comparison import image_comparison
 
 from core.orchestrator import Orchestrator
 from core.evaluator import Evaluator
@@ -122,12 +122,16 @@ with st.sidebar:
             selected_model = None
 
     with st.expander("预览"):
-        preview_img_max_side = st.slider("预览图像最长边 (px)", 300, 4000, 800, step=25)
+        def clear_img_cache():
+            get_thumbnail_img_rgb_array.clear()
+            get_thumbnail_img.clear()
+
+        preview_img_max_side = st.slider("预览图像最长边 (px)", 300, 4000, 800, step=25, on_change=clear_img_cache)
 
         inter_mapping = get_cv2_inter_mapping()
         inter_options = list(inter_mapping.keys())
 
-        preview_img_scale = st.selectbox("预览图像缩放算法", inter_options, format_func=inter_mapping.get)
+        preview_img_scale = st.selectbox("预览图像缩放算法", inter_options, format_func=inter_mapping.get, on_change=clear_img_cache)
 
     with st.expander("代码检索", expanded=True):
         st.text("这是什么", help="缺少工具时，使用GitHub REST API检索相关的代码，需要填写Token才能使用")
@@ -167,7 +171,11 @@ upload = st.file_uploader("上传图像", ["png", "jpg", "jpeg"])
     
 def get_thumbnail_img_wrapper(raw_array: np.ndarray):
     global preview_img_max_side, preview_img_scale
-    return get_thumbnail_img(raw_array, preview_img_max_side)
+    return get_thumbnail_img(raw_array, preview_img_max_side, preview_img_scale)
+
+def get_thumbnail_img_rgb_array_wrapper(raw_array: np.ndarray):
+    global preview_img_max_side, preview_img_scale
+    return get_thumbnail_img_rgb_array(raw_array, preview_img_max_side, preview_img_scale)
 
 if upload:
     img_bgr = load_bgr_img_from_file(upload)
@@ -188,9 +196,18 @@ if upload:
         with top_preview_placeholder.container():
             if st.session_state['best_bgr'] is not None:
                 st.subheader("当前优化进度")
-                c1, c2 = st.columns(2)
-                with c1: st.image(img_bgr_preview_bytes, caption="原图")
-                with c2: st.image(get_thumbnail_img_wrapper(st.session_state['best_bgr']), caption="当前最新增强结果")
+                advance_tab, side_by_side_tab = st.tabs(["高级", "并列"])
+                with advance_tab:
+                    image_comparison(
+                        get_thumbnail_img_rgb_array_wrapper(img_bgr),
+                        get_thumbnail_img_rgb_array_wrapper(st.session_state['best_bgr']),
+                        "原图",
+                        "最新"
+                    )
+                with side_by_side_tab:
+                    c1, c2 = st.columns(2)
+                    with c1: st.image(img_bgr_preview_bytes, caption="原图", width="stretch")
+                    with c2: st.image(get_thumbnail_img_wrapper(st.session_state['best_bgr']), caption="当前最新增强结果", width="stretch")
                 st.divider()
             else:
                 st.subheader("原图")
@@ -201,13 +218,15 @@ else:
     st.session_state.messages.clear()
     st.session_state['best_bgr'] = None
 
-def get_previous_img(curr_idx: int):
+def get_previous_img(curr_idx: int, ignore_test_mode: bool = True):
     prev_image = None
     if curr_idx > 0:
         # 向前查找最近一个包含图像的assistant消息
         for i in range(curr_idx - 1, -1, -1):
             prev_msg = st.session_state.messages[i]
-            if prev_msg["role"] == "assistant" and "image" in prev_msg and "test_mode" not in prev_msg:
+            if prev_msg["role"] == "assistant" and "image" in prev_msg:
+                if ignore_test_mode and "test_mode" in prev_msg:
+                    continue
                 prev_image = prev_msg["image"]
                 break
     return prev_image
@@ -216,7 +235,7 @@ def render_message_content(msg, index):
     """提取内部渲染逻辑，供历史记录与最新消息复用"""
     st.markdown(msg["content"])
     if "image" in msg:
-        prev_image = get_previous_img(index)
+        prev_image = get_previous_img(index, ignore_test_mode=False)
 
         with st.container(border=True):
             
@@ -225,21 +244,21 @@ def render_message_content(msg, index):
                 with c1tab1:
                     img_preview_c1, img_preview_c2 = st.columns(2)
                     with img_preview_c1: 
-                        st.image(img_bgr_preview_bytes, caption="原图")
+                        st.image(img_bgr_preview_bytes, caption="原图", width="stretch")
                     with img_preview_c2: 
-                        st.image(get_thumbnail_img_wrapper(msg["image"]), caption="此轮优化结果")
+                        st.image(get_thumbnail_img_wrapper(msg["image"]), caption="此轮优化结果", width="stretch")
                 with c1tab2:
                     img_preview2_c1, img_preview2_c2 = st.columns(2)
                     with img_preview2_c1: 
-                        st.image(get_thumbnail_img_wrapper(prev_image), caption="上一轮优化结果")
+                        st.image(get_thumbnail_img_wrapper(prev_image), caption="上一轮优化结果", width="stretch")
                     with img_preview2_c2: 
-                        st.image(get_thumbnail_img_wrapper(msg["image"]), caption="此轮优化结果")
+                        st.image(get_thumbnail_img_wrapper(msg["image"]), caption="此轮优化结果", width="stretch")
             else:
                 img_preview_c1, img_preview_c2 = st.columns(2)
                 with img_preview_c1: 
-                    st.image(img_bgr_preview_bytes, caption="原图")
+                    st.image(img_bgr_preview_bytes, caption="原图", width="stretch")
                 with img_preview_c2: 
-                    st.image(get_thumbnail_img_wrapper(msg["image"]), caption="此轮优化结果")
+                    st.image(get_thumbnail_img_wrapper(msg["image"]), caption="此轮优化结果", width="stretch")
 
         with st.expander("🛠️ 查看此轮生成的代码与最优参数"):
             with st.expander("评价逻辑 (Evaluation Code)"):
