@@ -205,18 +205,18 @@ if upload:
         with top_preview_placeholder.container():
             if st.session_state['best_bgr'] is not None:
                 st.subheader("当前优化进度")
-                advance_tab, side_by_side_tab = st.tabs(["高级", "并列"])
-                with advance_tab:
-                    image_comparison(
-                        get_thumbnail_img_rgb_array_wrapper(img_bgr),
-                        get_thumbnail_img_rgb_array_wrapper(st.session_state['best_bgr']),
-                        "原图",
-                        "最新"
-                    )
-                with side_by_side_tab:
-                    c1, c2 = st.columns(2)
-                    with c1: st.image(img_bgr_preview_bytes, caption="原图", width="stretch")
-                    with c2: st.image(get_thumbnail_img_wrapper(st.session_state['best_bgr']), caption="当前最新增强结果", width="stretch")
+                # advance_tab, side_by_side_tab = st.tabs(["高级", "并列"])
+                # with advance_tab:
+                image_comparison(
+                    get_thumbnail_img_rgb_array_wrapper(img_bgr),
+                    get_thumbnail_img_rgb_array_wrapper(st.session_state['best_bgr']),
+                    "原图",
+                    "最新"
+                )
+                # with side_by_side_tab:
+                #     c1, c2 = st.columns(2)
+                #     with c1: st.image(img_bgr_preview_bytes, caption="原图", width="stretch")
+                #     with c2: st.image(get_thumbnail_img_wrapper(st.session_state['best_bgr']), caption="当前最新增强结果", width="stretch")
                 st.divider()
             else:
                 st.subheader("原图")
@@ -247,27 +247,16 @@ def render_message_content(msg, index):
         prev_image = get_previous_img(index, ignore_test_mode=False)
 
         with st.container(border=True):
-            
+            comp_target = "原图"
             if prev_image is not None:
-                c1tab1, c1tab2 = st.tabs(["原图", "上一轮"])
-                with c1tab1:
-                    img_preview_c1, img_preview_c2 = st.columns(2)
-                    with img_preview_c1: 
-                        st.image(img_bgr_preview_bytes, caption="原图", width="stretch")
-                    with img_preview_c2: 
-                        st.image(get_thumbnail_img_wrapper(msg["image"]), caption="此轮优化结果", width="stretch")
-                with c1tab2:
-                    img_preview2_c1, img_preview2_c2 = st.columns(2)
-                    with img_preview2_c1: 
-                        st.image(get_thumbnail_img_wrapper(prev_image), caption="上一轮优化结果", width="stretch")
-                    with img_preview2_c2: 
-                        st.image(get_thumbnail_img_wrapper(msg["image"]), caption="此轮优化结果", width="stretch")
-            else:
-                img_preview_c1, img_preview_c2 = st.columns(2)
-                with img_preview_c1: 
-                    st.image(img_bgr_preview_bytes, caption="原图", width="stretch")
-                with img_preview_c2: 
-                    st.image(get_thumbnail_img_wrapper(msg["image"]), caption="此轮优化结果", width="stretch")
+                comp_target = st.radio("对比对象", ["原图", "上一轮"], horizontal=True)
+
+            image_comparison(
+                get_thumbnail_img_rgb_array_wrapper(img_bgr) if comp_target == "原图" else get_thumbnail_img_rgb_array_wrapper(prev_image),
+                get_thumbnail_img_rgb_array_wrapper(st.session_state['best_bgr']),
+                comp_target,
+                "最新"
+            )
 
         with st.expander("🛠️ 查看此轮生成的代码与最优参数"):
             with st.expander("评价逻辑 (Evaluation Code)"):
