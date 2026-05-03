@@ -198,9 +198,9 @@ def render_message_content(msg, index):
                     prev_image = prev_msg["image"]
                     break
 
-        with st.container():
+        with st.container(border=True):
             comp_img_type = "原图"
-            if prev_image:
+            if prev_image is not None:
                 comp_img_type = st.radio("对比的图像", options=["原图", "上一轮"], horizontal=True)
             img_preview_c1, img_preview_c2 = st.columns(2)
             with img_preview_c1: 
@@ -236,7 +236,7 @@ def render_message_content(msg, index):
                 st.button("📥 保存此版本", disabled=True)
             
         with btn_col2:
-            if msg["new_tool"]:
+            if "new_tool" in msg and msg["new_tool"]:
                 def save_tool(tool: dict):
                     custom_tool_dir = get_executable_dir() / "tools/custom"
                     custom_tool_dir.mkdir(parents=True, exist_ok=True)
