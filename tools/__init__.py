@@ -348,12 +348,12 @@ global_registry.register(
 global_registry.register(
     name="Vibrance",
     func=safe_vibrance,
-    description="自然饱和度调整。只针对饱和度低于平均值的区域进行较大幅度的提升，有效防止过饱和。",
+    description="基于 LUT 与 Tanh 曲线的自然饱和度调整。通过平滑的非线性映射提升低饱和度区域，天然具备柔性截断（Soft-Clip）特性，完美保护高饱和度区域不发生色彩溢出。",
     params_schema={
-        "amount": {
-            "type": "int",
-            "range": [0, 100],
-            "description": "调整量。0 为原图，20 - 50 为常用增益范围，100 为最强力增益。"
+        "level": {
+            "type": "float",
+            "range": [0.0, 3.0],
+            "description": "增强强度。无限趋近于 0 时为原图，1.0 为中等自然增益，2.0 为强力增益，3.0 为极限浓艳。"
         }
     }
 )
@@ -633,5 +633,7 @@ global_registry.register(
 #         }
 #     }
 # )
+
+global_registry.load_custom_tools()
 
 __all__ = ["global_registry"] # 向全局暴露该注册

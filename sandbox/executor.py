@@ -5,12 +5,15 @@ import cv2
 import math
 import inspect
 import skimage
+import scipy
 
 from tools import global_registry
 from core.evaluator import Evaluator
 from sandbox.code_checker import AgentCodeChecker, SecurityViolation
 from types import SimpleNamespace
 from typing import Callable
+
+from RestrictedPython import safe_globals
 
 class SandboxExecutor:
     """
@@ -21,18 +24,7 @@ class SandboxExecutor:
         "cv2": cv2,
         "optuna": optuna,
         "skimage": skimage,
-        "__builtins__": {
-            "range": range, 
-            "print": print, 
-            "float": float, 
-            "int": int,
-            "str": str,
-            "max": max,
-            "min": min,
-            "round": round,
-            "abs": abs
-        },
-        "Exception": Exception,
+        "scipy": scipy,
         "math": math,
         "cv_wrappers": None,
         "vision_metrics": None
@@ -48,6 +40,7 @@ class SandboxExecutor:
         self.timeout = timeout_seconds
         # 占位，防止运行时间过长
         self.registry = global_registry
+        self._base_namespace.update(safe_globals)
 
     @staticmethod
     def get_keys_iters(d):
@@ -149,6 +142,38 @@ class SandboxExecutor:
             raise
         except Exception as e:
             raise
+
+    def test_generated_tools(self, code_str: str, func_name: str, schema: dict) -> Exception | None:
+        exec_context = self._base_namespace.copy()
+        try:
+            # 安全检查
+            astree = ast.parse(code_str)
+            
+            checker = AgentCodeChecker()
+            checker.visit(astree)
+
+            exec(code_str, exec_context)
+
+            tool_func: Callable = exec_context.get(func_name)
+
+            if not tool_func:
+                raise ValueError(f"Agent 代码中未定义 {func_name} 函数")
+            
+            test_img = np.random.randint(0, 256, (48, 64), dtype=np.uint8)
+
+            sig = inspect.signature(tool_func)
+            sig.bind(test_img)
+            
+            result = tool_func(test_img)
+            if not isinstance(result, np.ndarray):
+                raise ValueError("Tool retval is not np.ndarray")
+            
+            global_registry.dynamic_register(tool_func, schema)
+
+            return None
+
+        except Exception as e:
+            return e
 
     def execute_pipeline(self, code_str: str, img: np.ndarray, trial: optuna.Trial) -> np.ndarray | Exception:
         """

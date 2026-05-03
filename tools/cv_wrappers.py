@@ -535,18 +535,24 @@ def safe_hsv_saturation_nonlinear(img: np.ndarray, saturation_scale: float = 1.2
     try:
         if img is None: raise ValueError("Error: Input image is None")
 
-        if len(img.shape) != 3: return img.copy() # 灰度图跳过
-        if saturation_scale == 1.0: return img.copy()
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+        if len(img.shape) != 3 or img.shape[2] != 3: 
+            return img.copy() # 非 3 通道图（如灰度图或 RGBA）直接跳过或另作处理
+            
+        if saturation_scale == 1.0: 
+            return img.copy()
+
+        # 1. 正常转换为 HSV，保持 uint8 类型即可，无需整体转为 float32
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         h, s, v = cv2.split(hsv)
         
-        # 归一化到 0-1 之间进行幂运算
-        s = 255 * np.power(s / 255.0, 1.0 / saturation_scale)
+        # 2. 构建 LUT (Look-Up Table) 查表
+        # 只对 0-255 这 256 个可能的数字进行一次幂运算，极大地节省算力
+        lut = np.arange(256, dtype=np.float32)
+        lut = 255.0 * np.power(lut / 255.0, 1.0 / saturation_scale)
+        lut = np.clip(lut, 0, 255).astype(np.uint8)
         
-        s = np.clip(s, 0, 255).astype(np.uint8)
-        h = h.astype(np.uint8)
-        s = s.astype(np.uint8)
-        v = v.astype(np.uint8)
+        # 3. 使用 cv2.LUT 快速映射 S 通道
+        s = cv2.LUT(s, lut)
         
         # 4. 合并并转回 BGR
         hsv_final = cv2.merge((h, s, v))
@@ -554,10 +560,11 @@ def safe_hsv_saturation_nonlinear(img: np.ndarray, saturation_scale: float = 1.2
     except Exception as e:
         raise RuntimeError(f"Saturation Nonlinear adjustment failed: {str(e)}")
     
-def safe_vibrance(img: np.ndarray, amount: float = 0.5):
+def safe_vibrance(img: np.ndarray, level: float = 1.4):
     """
-    自然饱和度
-    只增强那些饱和度原本较低的像素
+    :param image: 输入图像 (BGR 或 BGRA 格式)
+    :param level: 增强强度。> 1.0 为增加饱和度，1.0 为不变。
+    :return: 处理后的图像
     """
     try:
         if img is None: raise ValueError("Error: Input image is None")
@@ -565,9 +572,14 @@ def safe_vibrance(img: np.ndarray, amount: float = 0.5):
         if len(img.shape) < 3 or img.shape[2] < 3: 
             return img.copy() 
             
-        if amount == 0: 
+        if abs(level - 1.0) < 1e-5:
             return img.copy()
+            
+        # Tanh 算法主要用于增强，需防止除 0 或异常负值逻辑
+        if level <= 0.0:
+            raise ValueError("Level must be strictly greater than 0 for the Tanh algorithm")
 
+        # 2. 安全分离 Alpha 通道 (保护带透明度的 PNG 图像)
         has_alpha = img.shape[2] == 4
         if has_alpha:
             bgr = img[:, :, :3]
@@ -575,37 +587,31 @@ def safe_vibrance(img: np.ndarray, amount: float = 0.5):
         else:
             bgr = img
 
-        # 将 amount 限制在常规区间并归一化为 [-1.0, 1.0] 比例
-        amt = np.clip(amount, -100, 100) / 100.0
-
-        # 转换至 HSV 空间进行处理
-        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
+        # 3. 色彩空间转换
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
         h, s, v = cv2.split(hsv)
+
+        # 4. 构建并优化 LUT (Look-Up Table)
+        # 使用 float32 保证构建 LUT 时的数学精度
+        xval = np.arange(0, 256, dtype=np.float32)
         
-        if amt > 0:
-            # 1. 自然饱和度 Mask (低饱和度=1，高饱和度=0)
-            vibrance_mask = 1.0 - (s / 255.0)
-            
-            # 2. 灰阶保护 Mask (让极低饱和度区域平滑过渡，防止 s=0 时的噪点染色)
-            gray_protect_mask = np.clip(s / 10.0, 0.0, 1.0)
-            
-            # 3. Soft-Clip 渐进增加 (核心修复)
-            s += (255.0 - s) * amt * vibrance_mask * gray_protect_mask
-            
-        else:
-            # 当降低饱和度时，直接按当前比例衰减，避免硬减导致大片死灰
-            s += s * amt
+        # 核心数学修复：除以 np.tanh(level) 而不是 np.tanh(1)
+        # 这确保了无论 level 是多少，公式 y 的最大值始终精准落在 255，形成完美的渐进曲线
+        yval = 255.0 * np.tanh(level * xval / 255.0) / np.tanh(level)
         
-        # 由于我们使用了渐进式算法，这里的 np.clip 更多是作为浮点运算精度的最终兜底
-        s = np.clip(s, 0, 255).astype(np.uint8)
-        h = h.astype(np.uint8)
-        v = v.astype(np.uint8)
-        
-        hsv_final = cv2.merge((h, s, v))
+        # 核心工程修复：使用 np.clip 兜底浮点数误差，并安全转换为 uint8 杜绝溢出
+        lut = np.clip(yval + 0.5, 0, 255).astype(np.uint8)
+
+        # 5. 极速应用字典替换
+        new_s = cv2.LUT(s, lut)
+
+        # 6. 重组图像并转回 BGR
+        hsv_final = cv2.merge([h, new_s, v])
         bgr_final = cv2.cvtColor(hsv_final, cv2.COLOR_HSV2BGR)
 
+        # 7. 还原 Alpha 通道
         if has_alpha:
-            return cv2.merge((bgr_final, alpha))
+            return cv2.merge([bgr_final, alpha])
         
         return bgr_final
     except Exception as e:

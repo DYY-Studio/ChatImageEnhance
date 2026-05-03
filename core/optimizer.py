@@ -14,6 +14,7 @@ class BayesianOptimizer:
     """
     def __init__(self, executor: SandboxExecutor):
         self.executor = executor
+        self.study = optuna.create_study(direction="maximize")
 
     def run_inner_loop(self, 
         code_str: str, 
@@ -90,14 +91,13 @@ class BayesianOptimizer:
                 logger.error("CODE EXEC ERROR", e)
                 raise optuna.TrialPruned()  # 代码执行错误，修剪该 trial
 
-        study = optuna.create_study(direction="maximize")
-        study.optimize(objective, n_trials=n_trials, callbacks=callbacks)
+        self.study.optimize(objective, n_trials=n_trials, callbacks=callbacks)
         
         try:
             return {
-                "best_score": study.best_value,
-                "best_params": study.best_params,
-                "best_img": self.executor.execute_pipeline_direct(code_str, base_img, study.best_params)
+                "best_score": self.study.best_value,
+                "best_params": self.study.best_params,
+                "best_img": self.executor.execute_pipeline_direct(code_str, base_img, self.study.best_params)
             }
         except:
             return {
