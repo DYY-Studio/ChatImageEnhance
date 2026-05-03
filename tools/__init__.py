@@ -634,4 +634,6 @@ global_registry.register(
 #     }
 # )
 
+global_registry.load_custom_tools()
+
 __all__ = ["global_registry"] # 向全局暴露该注册

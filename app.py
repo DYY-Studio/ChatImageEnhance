@@ -2,19 +2,27 @@ import streamlit as st
 import cv2
 import numpy as np
 import httpx
+import yaml
 
 from openai import OpenAI, DefaultHttpxClient
-from typing import Generator
 from queue import Queue
-from pathlib import Path
 from streamlit_local_storage import LocalStorage
+from typing import BinaryIO
 
 from core.orchestrator import Orchestrator
 from core.evaluator import Evaluator
+from core.searcher import Searcher
+
 from agents.coder import CoderAgent
 from agents.evaluator import EvaluatorAgent
 from agents.planner import PlannerAgent
-from components.optuna_callbacks import StOptunaCallback, StOptunaCallbackImg
+from agents.toolmaker import ToolMakerAgent
+
+from components.optuna_callbacks import StOptunaCallbackImg
+from components.tool_search import StSearch
+from components.llm_response_handler import StStreamResHandler
+
+from utils import *
 
 localS = LocalStorage()
 
@@ -35,6 +43,8 @@ if 'has_api_key' not in st.session_state:
     st.session_state['has_api_key'] = st.session_state.api_key != ""
 if 'proxy_url' not in st.session_state:
     st.session_state['proxy_url'] = localS.getItem('proxy_url') or ""
+if 'github_token' not in st.session_state:
+    st.session_state['github_token'] = localS.getItem('github_token') or ""
 
 @st.cache_resource
 def get_openai_client(base_url: str, api_key: str, proxy_url: str):
@@ -74,12 +84,19 @@ st.title("✨ ChatImageEnhance")
 st.caption("LLM Agent + Optuna 人类在环图像增强系统")
 st.divider()
 
+@st.cache_resource
+def get_cv2_inter_mapping() -> dict[int, str]:
+    return {
+        getattr(cv2, name): name
+        for name in dir(cv2) 
+        if name.startswith('INTER_') and not any(x in name for x in ['MAX', 'TAB', 'BITS'])
+    }
+
 with st.sidebar:
-    st.header("模型设置")
-    s1c1, s1c2 = st.columns([0.001, 0.999])
-    with s1c2:
+    st.header("设置")
+    with st.expander("模型", expanded=True):
         api_url = st.text_input(
-            "API URL (OpenAI 兼容)", 
+            "API URL (OpenAI 兼容端点)", 
             placeholder='https://api.openai.com/v1', 
             key="api_url",
             on_change=clear_models
@@ -91,28 +108,70 @@ with st.sidebar:
         fetch_button = st.button("获取模型列表", disabled = True if not api_url else False, width="stretch")
         if fetch_button:
             get_models()
+        
+        # 添加无模型选项用于测试
+        model_options = ["无模型 (测试模式)"] + (st.session_state.models or [])
         selected_model = st.selectbox(
             "模型", 
-            options = st.session_state.models,
-            index = 0 if st.session_state.models else None
+            options = model_options,
+            index = 0
+        )
+        
+        # 如果选择了无模型选项，将selected_model设为None
+        if selected_model == "无模型 (测试模式)":
+            selected_model = None
+
+    with st.expander("预览"):
+        preview_img_max_side = st.slider("预览图像最长边 (px)", 300, 4000, 800, step=25)
+
+        inter_mapping = get_cv2_inter_mapping()
+        inter_options = list(inter_mapping.keys())
+
+        preview_img_scale = st.selectbox("预览图像缩放算法", inter_options, format_func=inter_mapping.get)
+
+    with st.expander("代码检索", expanded=True):
+        st.text("这是什么", help="缺少工具时，使用GitHub REST API检索相关的代码，需要填写Token才能使用")
+        github_token = st.text_input("GitHub Token", type='password', key="github_token")
+        search_steps_limit = st.slider(
+            "搜索步骤数限制", 10, 100, 30, step=1, disabled=not github_token,
+            help="限制最多 LLM 调用次数，防止难以找到时无限运行"
+        )
+        search_interval = st.slider(
+            "强制步骤间隔 (秒)", 0.0, 60.0, 5.0, step=0.5, disabled=not github_token,
+            help="强行在两次请求之间插入间隔，防止请求过于频繁"
         )
     
-    st.header("处理设置")
-    s2c1, s2c2 = st.columns([0.001, 0.999])
-    with s2c2:
+    with st.expander("处理", expanded=True):
+        step_by_step = st.toggle(
+            "处理时基于上一轮图像",
+            help="不勾选时每次处理均在原图上进行，勾选后则对上一轮结果进行"
+        )
         n_trials = st.slider("优化轮数", 5, 150, 15)
 
-    if fetch_button and st.session_state.models:
+    if (cache_api := fetch_button and st.session_state.models) or github_token:
         with st.container(height=1, border=False):
-            localS.setItem("api_url", api_url, "locals_api_url")
-            localS.setItem("api_key", api_key, "locals_api_key")
-            localS.setItem("proxy_url", proxy_url, "locals_proxy_url")
+            if cache_api:
+                if api_url: localS.setItem("api_url", api_url, "locals_api_url")
+                elif localS.getItem("api_url"): localS.deleteItem("api_url", "del_locals_api_url")
+
+                if api_key: localS.setItem("api_key", api_key, "locals_api_key")
+                elif localS.getItem("api_key"): localS.deleteItem("api_key", "del_locals_api_key")
+
+                if proxy_url: localS.setItem("proxy_url", proxy_url, "locals_proxy_url")
+                elif localS.getItem("proxy_url"): localS.deleteItem("proxy_url", "del_locals_proxy_url")
+
+            if github_token: localS.setItem("github_token", github_token, "locals_github_token")
+            elif localS.getItem("github_token"): localS.deleteItem("github_token", "del_locals_github_token")
 
 upload = st.file_uploader("上传图像", ["png", "jpg", "jpeg"])
+    
+def get_thumbnail_img_wrapper(raw_array: np.ndarray):
+    global preview_img_max_side, preview_img_scale
+    return get_thumbnail_img(raw_array, preview_img_max_side)
 
 if upload:
-    file_bytes = np.asarray(bytearray(upload.read()), dtype=np.uint8)
-    img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+    img_bgr = load_bgr_img_from_file(upload)
+    img_bgr_preview_bytes = get_thumbnail_img_wrapper(img_bgr)
 
 if 'messages' not in st.session_state:
     st.session_state['messages'] = []
@@ -122,78 +181,126 @@ if 'best_bgr' not in st.session_state:
 # 如果有历史结果，并在界面顶部展示原图与当前最佳进度的对比
 if upload:
     evaluator = Evaluator(img_bgr)
-    if st.session_state['best_bgr'] is not None:
-        st.subheader("📊 当前优化进度")
-        from components.optuna_callbacks import create_image_comparison_widget
-        create_image_comparison_widget(
-            img_bgr, 
-            st.session_state['best_bgr'],
-            "原始图片",
-            "最新增强结果",
-            unique_key_prefix=f"top_progress_{id(st.session_state['best_bgr'])}"
-        )
-        st.divider()
-    else:
-        st.subheader("📷 原图")
-        st.image(img_bgr, width="stretch", channels="BGR")
+    top_preview_placeholder = st.empty()
+    
+    def update_top_preview():
+        """用于局部刷新顶部图像预览的函数"""
+        with top_preview_placeholder.container():
+            if st.session_state['best_bgr'] is not None:
+                st.subheader("当前优化进度")
+                c1, c2 = st.columns(2)
+                with c1: st.image(img_bgr_preview_bytes, caption="原图")
+                with c2: st.image(get_thumbnail_img_wrapper(st.session_state['best_bgr']), caption="当前最新增强结果")
+                st.divider()
+            else:
+                st.subheader("原图")
+                st.image(img_bgr_preview_bytes, width="stretch")
+    
+    update_top_preview()
+else:
+    st.session_state.messages.clear()
+    st.session_state['best_bgr'] = None
 
+def get_previous_img(curr_idx: int):
+    prev_image = None
+    if curr_idx > 0:
+        # 向前查找最近一个包含图像的assistant消息
+        for i in range(curr_idx - 1, -1, -1):
+            prev_msg = st.session_state.messages[i]
+            if prev_msg["role"] == "assistant" and "image" in prev_msg and "test_mode" not in prev_msg:
+                prev_image = prev_msg["image"]
+                break
+    return prev_image
+
+def render_message_content(msg, index):
+    """提取内部渲染逻辑，供历史记录与最新消息复用"""
+    st.markdown(msg["content"])
+    if "image" in msg:
+        prev_image = get_previous_img(index)
+
+        with st.container(border=True):
+            
+            if prev_image is not None:
+                c1tab1, c1tab2 = st.tabs(["原图", "上一轮"])
+                with c1tab1:
+                    img_preview_c1, img_preview_c2 = st.columns(2)
+                    with img_preview_c1: 
+                        st.image(img_bgr_preview_bytes, caption="原图")
+                    with img_preview_c2: 
+                        st.image(get_thumbnail_img_wrapper(msg["image"]), caption="此轮优化结果")
+                with c1tab2:
+                    img_preview2_c1, img_preview2_c2 = st.columns(2)
+                    with img_preview2_c1: 
+                        st.image(get_thumbnail_img_wrapper(prev_image), caption="上一轮优化结果")
+                    with img_preview2_c2: 
+                        st.image(get_thumbnail_img_wrapper(msg["image"]), caption="此轮优化结果")
+            else:
+                img_preview_c1, img_preview_c2 = st.columns(2)
+                with img_preview_c1: 
+                    st.image(img_bgr_preview_bytes, caption="原图")
+                with img_preview_c2: 
+                    st.image(get_thumbnail_img_wrapper(msg["image"]), caption="此轮优化结果")
+
+        with st.expander("🛠️ 查看此轮生成的代码与最优参数"):
+            with st.expander("评价逻辑 (Evaluation Code)"):
+                st.code(msg.get("eval_code", "# 无评价代码"), language="python")
+            
+            with st.expander("处理逻辑 (Process Code)"):
+                st.code(msg.get("process_code", "# 无处理代码"), language="python")
+            
+            with st.expander("Optuna 最优参数组合"):
+                st.json(msg.get("best_params", {}))
+        
+        btn_col1, btn_col2 = st.columns(2)
+        with btn_col1:
+            succ, enc_img_bytes = get_encoded_img(msg["image"])
+            if succ:
+                st.download_button(
+                    label="📥 保存此版本", 
+                    data=enc_img_bytes, 
+                    file_name=f"enhanced_history_{index}.png", 
+                    mime="image/png", 
+                    key=f"dl_history_{index}"
+                )
+            else:
+                st.button("📥 保存此版本", disabled=True)
+            
+        with btn_col2:
+            if "new_tool" in msg and msg["new_tool"]:
+                def save_tool(tool: dict):
+                    custom_tool_dir = get_executable_dir() / "tools/custom"
+                    custom_tool_dir.mkdir(parents=True, exist_ok=True)
+
+                    tool_schema = tool['schema']
+                    tool_code = tool['code']
+
+                    tool_name: str = tool_schema['name']
+
+                    (custom_tool_dir / tool_name).with_suffix(".yaml").write_text(
+                        yaml.dump(tool_schema, allow_unicode=True, indent=2), encoding='utf-8'
+                    )
+
+                    imports_text = "import numpy as np\nimport cv2\nimport math\nimport skimage\nimport scipy"
+
+                    (custom_tool_dir / tool_name).with_suffix(".py").write_text(
+                        f"{imports_text}\n\n{tool_code}", encoding='utf-8'
+                    )
+
+                file_name = get_executable_dir() / f"tools/custom/{msg['new_tool']['schema']['name']}"
+
+                if file_name.with_suffix(".yaml").exists() and file_name.with_suffix(".py").exists():
+                    st.button("🆕 保存新工具", disabled=True)
+                else:
+                    st.button("🆕 保存新工具", on_click=save_tool, args=[msg['new_tool']])
 
 # --- 渲染历史聊天记录 ---
 for i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        if "image" in msg:
-            # 如果有上一轮结果或原图，提供对比选项
-            if i > 0 and st.session_state.messages[i-1].get("image") is not None:
-                prev_img = st.session_state.messages[i-1]["image"]
-                st.markdown(f"**第 {i+1} 轮优化结果**")
-                from components.optuna_callbacks import create_image_comparison_widget
-                create_image_comparison_widget(
-                    prev_img, 
-                    msg["image"],
-                    f"第 {i} 轮结果",
-                    f"第 {i+1} 轮结果",
-                    unique_key_prefix=f"history_round_{i}_{id(msg['image'])}"
-                )
-            elif upload:
-                # 第一轮与原图对比
-                st.markdown("**第 1 轮优化结果**")
-                from components.optuna_callbacks import create_image_comparison_widget
-                create_image_comparison_widget(
-                    img_bgr, 
-                    msg["image"],
-                    "原始图片",
-                    "第 1 轮增强结果",
-                    unique_key_prefix=f"first_round_{i}_{id(msg['image'])}"
-                )
-            else:
-                # 没有对比对象时单独显示
-                st.image(msg["image"], channels="BGR", caption="此轮优化结果")
-
-            with st.expander("🛠️ 查看此轮生成的代码与最优参数"):
-                with st.expander("评价逻辑 (Evaluation Code)"):
-                    st.code(msg.get("eval_code", "# 无评价代码"), language="python")
-                
-                with st.expander("处理逻辑 (Process Code)"):
-                    st.code(msg.get("process_code", "# 无处理代码"), language="python")
-                
-                with st.expander("Optuna 最优参数组合"):
-                    st.json(msg.get("best_params", {}))
-            
-            # 从内存直接提供历史版本的下载
-            succ, enc_img = cv2.imencode('.png', msg["image"], [cv2.IMWRITE_PNG_COMPRESSION, 2])
-            if succ:
-                st.download_button(
-                    label="📥 保存此版本", 
-                    data=enc_img.tobytes(), 
-                    file_name=f"enhanced_history_{i}.png", 
-                    mime="image/png", 
-                    key=f"dl_history_{i}"
-                )
+        render_message_content(msg, i)
 
 user_feedback = st.chat_input(
     '描述你的增强要求或对上轮结果的反馈\n（例如："这张图有些模糊，给我锐化一下" 或 "这版锐化过度了，稍微柔和一点"）', 
-    disabled=not selected_model
+    disabled=not upload
 )
 
 if upload and selected_model:
@@ -242,43 +349,44 @@ if upload and selected_model:
                         for issue in analyze_result['identified_issues']:
                             response_text += f"| {issue.get('issue_type', '未知')} | {issue.get('severity', '未知')} | {issue.get('evidence')}\n"
                     
-                    response_text += f"\n**✨ 推荐增强提示词：**\n``text\n{suggestion}\n```\n"
+                    response_text += f"\n**✨ 推荐增强提示词：**\n```text\n{suggestion}\n```\n"
                     response_text += "\n*💡 您可以直接复制上面的提示词发送给我，或在此基础上做出一定的调整*"
                     
                     # 渲染到界面并存入历史记录
-                    st.markdown(response_text)
-                    st.session_state.messages.append({"role": "assistant", "content": response_text})
-                    st.rerun()
+                    new_msg = {"role": "assistant", "content": response_text}
+                    st.session_state.messages.append(new_msg)
+                    render_message_content(new_msg, len(st.session_state.messages) - 1)
 
 if user_feedback:
     if not upload:
         st.warning("请先上传图片")
         st.stop()
-    if not api_url:
+    
+    # 如果选择了模型但没有配置API URL，则警告
+    if selected_model and not api_url:
         st.warning("请输入API URL")
         st.stop()
-    if not selected_model:
-        st.warning("未选择使用的模型")
-        st.stop()
-
+    
+    if selected_model is None:
+        pass
+    
     # 1. 记录人类用户的输入
-    st.session_state.messages.append({"role": "user", "content": user_feedback})
-    with st.chat_message("user"):
-        st.markdown(user_feedback)
+    user_feedback_msg = {"role": "user", "content": user_feedback}
+    st.session_state.messages.append(user_feedback_msg)
+    with st.chat_message(user_feedback_msg["role"]):
+        render_message_content(user_feedback_msg, len(st.session_state.messages) - 1)
 
-    # 2. 启动智能体响应
-    with st.chat_message("assistant"):
-        # 整合上下文策略：将初始目标、历史反馈和当前诉求组装给 LLM
+    def generate_user_prompt(include_process: bool = False, include_evaluate: bool = False, step_by_step: bool = False):
         last_assistant_msg = next(
             (
                 m for m in reversed(st.session_state.messages[:-1]) 
-                if m['role'] == 'assistant' and "image" in m
+                if m['role'] == 'assistant' and "image" in m and "test_mode" not in m
             ), 
             None
         )
         
         current_iter_prompt = f""
-        if last_assistant_msg:
+        if last_assistant_msg and not step_by_step:
             current_iter_prompt += f"--- 上一轮执行状态/系统回复 ---\n{last_assistant_msg['content']}\n"
 
             l_params = last_assistant_msg.get("best_params", {})
@@ -286,8 +394,8 @@ if user_feedback:
             l_proc = last_assistant_msg.get("process_code", "")
             
             if l_eval and l_proc:
-                current_iter_prompt += f"\n--- 上一轮使用的评价函数代码 ---\n```python\n{l_eval}\n```\n"
-                current_iter_prompt += f"\n--- 上一轮使用的图像处理代码 ---\n```python\n{l_proc}\n```\n"
+                if include_evaluate: current_iter_prompt += f"\n--- 上一轮使用的评价函数代码 ---\n```python\n{l_eval}\n```\n"
+                if include_process: current_iter_prompt += f"\n--- 上一轮使用的图像处理代码 ---\n```python\n{l_proc}\n```\n"
 
             if l_params:
                 current_iter_prompt += f"\n--- 上一轮 Optuna 搜索到的最优参数 ---\n{l_params}\n"
@@ -296,19 +404,50 @@ if user_feedback:
             # current_iter_prompt += "\n请仅基于全局目标、上一轮的状态和本次人类的最新反馈，修改评价指标、代码或 Optuna 参数范围。"
         else:
             current_iter_prompt += f"--- 用户要求 ---\n{user_feedback}"
-        # ==========================================
+        return current_iter_prompt
+
+    # 2. 启动智能体响应
+    with st.chat_message("assistant"):
+        # 整合上下文策略：将初始目标、历史反馈和当前诉求组装给 LLM
+
+        # 检查是否为无模型测试模式
+        if not selected_model:
+            st.info("🧪 当前处于【无模型测试模式】，直接返回原图。")
+            
+            # 直接使用原图作为"增强结果"
+            best_bgr = img_bgr.copy()
+            best_params = {"mode": "test_no_llm", "info": "无模型测试模式，未进行任何处理"}
+            
+            # 更新会话状态
+            st.session_state['best_bgr'] = best_bgr
+            
+            # 将系统的回应和新图像记入历史记录
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": "✅ 【测试模式】已返回原图。请选择一个有效的模型以启用真正的 AI 图像增强功能。",
+                "image": best_bgr,
+                "eval_code": "# 无模型测试模式，未生成评价代码",
+                "process_code": "# 无模型测试模式，未生成处理代码",
+                "best_params": best_params,
+                "new_tool": None,
+                "test_mode": True
+            })
+            
+            st.rerun()
 
         client = get_openai_client(st.session_state.api_url, st.session_state.api_key, st.session_state.proxy_url)
         orch = Orchestrator(
             CoderAgent(client, selected_model),
-            EvaluatorAgent(client, selected_model)
+            EvaluatorAgent(client, selected_model),
+            ToolMakerAgent(client, selected_model)
         )
 
         with (main_status := st.status("🛠️ 根据反馈调整并运行...", expanded=True)):
             with (eva_status := st.status("📝 LLM 调整评价策略", state="error")):
-                eva_message = st.empty()
-            with (llm_status := st.status("🧠 LLM 调整增强代码", state="error")):
-                chat_message = st.empty()
+                eva_thinking_container = st.container(border=False)
+            with (main_container := st.container(border=False)):
+                with (code_status := st.status("🧠 LLM 调整增强代码", state="error")):
+                    code_thinking_container = st.container(border=False)
             with (optuna_status := st.status("🔬 Optuna 重新调优", state="error")):
                 status_text = st.empty()
                 progress_bar = st.progress(0)
@@ -317,59 +456,117 @@ if user_feedback:
                 with data_tab: table_placeholder = st.empty()
 
             best_queue = Queue()
-            callback = StOptunaCallbackImg(n_trials, progress_bar, status_text, table_placeholder, best_img, best_queue)
+            prev_img_bgr = get_previous_img(len(st.session_state.messages))
+            callback = StOptunaCallbackImg(
+                n_trials, 
+                progress_bar, status_text, table_placeholder, 
+                best_img, best_queue,
+                prev_img_bgr or img_bgr, prev_img_bgr is None, preview_img_max_side, preview_img_scale
+            )
 
             best_bgr, best_params, log = None, None, None
             evaluate_code_str = ''
+            process_code_str = ''
+            new_tool: dict | None = None
 
-            # 执行 Evaluator 流
-            def eva_stream_wrapper():
-                global eva_status, evaluate_code_str
-                # 注意这里传入 current_iter_prompt
-                for t, body in orch.prepare_stream(image=img_bgr, user_prompt=current_iter_prompt):
-                    if t == "CODE_EVALUATE.START":
-                        eva_status.update(state="running")
-                    elif t == "CODE_EVALUATE.REASONING":
-                        yield body
-                    elif t == "CODE_EVALUATE.STREAM":
-                        yield body
-                    elif t == "CODE_EVALUATE.END":
-                        pass
-                    elif t == "FINISH":
-                        eva_status.update(state="complete")
-                        evaluate_code_str = body
-            
-            eva_message.write_stream(eva_stream_wrapper())
+            evaluate_handler = StStreamResHandler(eva_status, eva_thinking_container)
 
-            process_code_str = ""
+            for t, body in orch.prepare_stream(image=img_bgr, user_prompt=generate_user_prompt(True, True, step_by_step)):
+                if t == "CODE_EVALUATE.START":
+                    eva_status.update(state="running")
+                elif t == "CODE_EVALUATE.REASONING":
+                    evaluate_handler.thinking_chunk(body)
+                elif t == "CODE_EVALUATE.STREAM":
+                    evaluate_handler.content_chunk(body)
+                    evaluate_handler.thinking_end()
+                elif t == "CODE_EVALUATE.END":
+                    evaluate_handler.content_end()
+                elif t == "FINISH":
+                    eva_status.update(state="complete")
+                    evaluate_code_str = body
+                    evaluate_handler.set_content(f"```python\n{evaluate_code_str}\n```")
 
-            # 执行 Coder 与 Optuna 流
-            def stream_wrapper():
-                global best_bgr, best_params, log, llm_status, optuna_status, process_code_str
-                # 同样传入包含人类反馈的 current_iter_prompt
+            coding_finish = False
+
+            while not coding_finish:
+                tool_request = ''
+                tool_status = None
+                search_result = dict()
+                coder_handler = StStreamResHandler(code_status, code_thinking_container)
+
+                orch.coder.rebuild_system_prompt()
                 for t, body in orch.process_stream(
-                    image=img_bgr,
+                    image=st.session_state['best_bgr'] if step_by_step and st.session_state['best_bgr'] else img_bgr,
                     evaluate_code_str=evaluate_code_str,
                     best_queue=best_queue,
-                    user_prompt=current_iter_prompt,
+                    user_prompt=generate_user_prompt(True, True, step_by_step),
                     n_trials=n_trials,
                     callbacks=[callback]
                 ):
                     if t == "CODE.START":
-                        llm_status.update(state="running")
+                        pass
                     elif t == "CODE.REASONING":
-                        yield body
+                        coder_handler.thinking_chunk(body)
                     elif t == "CODE.STREAM":
-                        yield body
+                        coder_handler.content_chunk(body)
+                        coder_handler.thinking_end()
                     elif t == "CODE.END":
-                        llm_status.update(state="complete")
-                        optuna_status.update(state="running")
+                        coder_handler.content_end()
                         process_code_str = body
+                    elif t == "OPTUNA.START":
+                        optuna_status.update(state="running")
                     elif t == "FINISH":
                         optuna_status.update(state="complete")
                         best_bgr, best_params, log = body
 
-            chat_message.write_stream(stream_wrapper())
+                        coding_finish = True
+                    
+                    elif t == "TOOL_REQUEST":
+                        code_status.update(state='error')
+                        tool_request = body['description']
+
+                        if github_token:
+                            with main_container:
+                                with (tool_status := st.status("⌨️ LLM 编写额外工具", state="error")):
+                                    search_container = st.container(border=False)
+
+                                tool_status.update(state='running')
+                                if search_container:
+                                    if github_token:
+                                        searcher = Searcher(github_token, client, selected_model)
+                                        search_result: dict = StSearch(
+                                            searcher, tool_request, search_container, search_steps_limit, search_interval
+                                        )
+                        break
+                
+                if tool_request:
+                    with main_container:
+                        if not tool_status:
+                            tool_status = st.status("⌨️ LLM 编写额外工具", state="error")
+
+                        with tool_status:
+                            with (toolmaker_status := st.status("⌨️ 编写工具", state="error")):
+                                toolmaker_container = st.container(border=False)
+
+                    toolmaker_handler = StStreamResHandler(toolmaker_status, toolmaker_container)
+                        
+                    for t, body in orch.toolmaker_stream(tool_request, search_result):
+                        if t == "CODE_TOOL.STREAM":
+                            toolmaker_handler.content_chunk(body)
+                            toolmaker_handler.thinking_end()
+                        elif t == "CODE_TOOL.REASONING":
+                            toolmaker_handler.thinking_chunk(body)
+                        elif t == "CODE_TOOL.END":
+                            toolmaker_handler.content_end()
+                        elif t == "ERROR_RETRY":
+                            with main_container:
+                                with tool_status:
+                                    with (toolmaker_status := st.status("⌨️ 编写工具", state="error")):
+                                        toolmaker_container = st.container(border=False)
+                            
+                            toolmaker_handler = StStreamResHandler(toolmaker_status, toolmaker_container)
+                        elif t == "FINISH":
+                            new_tool = body
 
         # --- 收尾与状态更新 ---
         if best_bgr is None:
@@ -379,17 +576,16 @@ if user_feedback:
             main_status.update(label="本轮调整结束", state="complete")
             st.session_state['best_bgr'] = best_bgr
 
-            with st.expander("最优参数 (用于调试)"):
-                st.json(best_params)
-
-            # 将系统的回应和新图像记入历史记录
-            st.session_state.messages.append({
+            new_msg = {
                 "role": "assistant",
                 "content": "已完成本轮调优。请查看图像，如果需要进一步调整（如：增加亮度、减少对比度），请直接告诉我。",
                 "image": best_bgr,
                 "eval_code": evaluate_code_str,
                 "process_code": process_code_str,
-                "best_params": best_params
-            })
+                "best_params": best_params,
+            }
+            if new_tool: new_msg["new_tool"] = new_tool
+            st.session_state.messages.append(new_msg)
 
-            st.rerun()
+            render_message_content(new_msg, len(st.session_state.messages) - 1)
+            update_top_preview()

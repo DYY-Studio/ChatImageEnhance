@@ -3,7 +3,7 @@
 `streamlit run app.py`
 # 架构描述
 
-## 三大Agent
+## 五大Agent
 ### PlannerAgent
 * （视觉模型）负责根据图像内容和客观量化参数分析图像存在的问题，并给用户给出推荐的优化方向和建议提示词
 
@@ -22,24 +22,36 @@
     pass
   ```
 
+### SearcherAgent
+* 输入：缺少的工具的描述
+* 根据缺少的工具的描述，利用 GitHub REST API 搜索相关代码
+
+### ToolMakerAgent
+* 输入：缺少的工具的描述，相关代码
+* 根据输入信息编写健壮的图像处理工具
+
 ## 运行方式
 1. 用户输入图像和自然语言描述（或使用PlannerAgent生成提示词）
 2. EvaluatorAgent根据用户的自然语言输入编写评价函数，指导本轮Optuna调优
-3. CoderAgent根据用户的自然语言输入、评价函数，编写主处理管线
+3. CoderAgent根据用户的自然语言输入编写主处理管线。
+   1. CoderAgent发现本地工具无法完成任务，发起工具编写请求
+   2. SearcherAgent根据要求搜索GitHub，寻找相关代码
+   3. ToolMakerAgent根据要求和相关代码，编写健壮的工具
 4. 用户检查结果是否符合预期，输入下一步操作的自然语言描述
 5. 回到第一步
 
 # 架构图
 ```plaintext
 AutoImageEnhance/
-├── app.py                      # 负责前端交互 (Streamlit UI或其他) 
+├── app.py                      # 负责前端交互 (Streamlit UI) 
 │
 ├── main_cli.py                 # 纯命令行入口 (占位，目前没有计划)
 │
 ├── core/                       # 核心业务逻辑层
 │   ├── __init__.py
 │   ├── orchestrator.py         # 主控调度器：管理 LLM 与 Optuna 的双循环机制
-│   ├── evaluator.py            # 图像质量评估器：定义奖励函数
+│   ├── evaluator.py            # 图像质量评估器：定义基本图像质量评估指标
+│   ├── searcher.py             # 代码检索器：封装代码检索流程
 │   └── optimizer.py            # 贝叶斯优化器：封装 Optuna 逻辑
 │
 ├── agents/                     # 大模型 Agent 层
@@ -47,6 +59,8 @@ AutoImageEnhance/
 │   ├── base_agent.py           # 基础 Agent 类 (封装 LLM API 调用)
 │   ├── planner.py              # 规划者：分析图像，给出图像可改进的内容，并给用户推荐提示词
 │   ├── evaluator.py            # 评估者：将提示词转化为适用于 Optuna Study 的奖励函数
+│   ├── seacher.py              # 检索者：利用GitHub REST API检索相关的代码实现
+│   ├── toolmaker.py            # 工具编写者：按编码者的需求和检索者收集到的信息编写工具
 │   └── coder.py                # 编码者：将提示词转化为带有 Optuna trial 的 Python 代码
 │
 ├── tools/                      # 传统计算机视觉库
@@ -62,7 +76,10 @@ AutoImageEnhance/
 │
 ├── memory/                     # 记忆与经验库
 │   ├── __init__.py
-│   └── experience_db.py        # 封装 ChromaDB，存储成功案例
+│   └── experience_db.py        # 封装 ChromaDB
+│
+├── utils/                      # 通用工具
+│   └── __init__.py             
 │
 └── requirements.txt            # 项目依赖
 ```

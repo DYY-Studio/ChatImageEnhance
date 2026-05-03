@@ -66,11 +66,14 @@ class BaseAgent:
 
         prompts = [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": [content for content in user_content if content['type'] == 'text']},
+            {"role": "user", "content": user_content},
         ]
 
-        logger.info(json.dumps(
-            prompts, indent=2, ensure_ascii=False
+        logger.debug(json.dumps(
+            [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": [content for content in user_content if content['type'] == 'text']},
+            ], indent=2, ensure_ascii=False
         ))
         
         return prompts
@@ -119,6 +122,11 @@ class BaseAgent:
         :param REASONING: 表示该块为思考内容
         :param CONTENT: 表示该块为结果内容
         """
+
+        in_thought_block = False
+        buffer = ""
+        tags = ['<thought>', '</thought>', '<thinking>', '</thinking>']
+
         for attempt in range(max_retries):
             try:
                 # 这里假设使用的是 OpenAI 或兼容的 API SDK
@@ -131,11 +139,61 @@ class BaseAgent:
                 )
                 for chunk in stream:
                     delta = chunk.choices[0].delta
+
                     if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                         yield "REASONING", delta.reasoning_content
                         continue
+                    
                     if hasattr(delta, 'content') and delta.content:
-                        yield "CONTENT", delta.content
+                        buffer += delta.content
+                        
+                        # 循环提取 buffer 中所有的完整标签
+                        while True:
+                            earliest_tag = None
+                            earliest_pos = -1
+                            
+                            # 寻找最先出现的标签
+                            for tag in tags:
+                                pos = buffer.find(tag)
+                                if pos != -1 and (earliest_pos == -1 or pos < earliest_pos):
+                                    earliest_pos = pos
+                                    earliest_tag = tag
+                                    
+                            if earliest_tag:
+                                # 找到了完整标签，把标签前面的内容输出
+                                if earliest_pos > 0:
+                                    yield ("REASONING" if in_thought_block else "CONTENT"), buffer[:earliest_pos]
+                                
+                                # 切换状态
+                                in_thought_block = earliest_tag in ('<thought>', '<thinking>', )
+                                
+                                # 消耗掉处理完的 buffer 部分（包含标签本身）
+                                buffer = buffer[earliest_pos + len(earliest_tag):]
+                            else:
+                                break # 当前 buffer 没有完整的标签了
+                                
+                        # 处理剩余的 buffer：检查是否恰好截断在标签上（例如 "这里是 <thou"）
+                        last_bracket_idx = buffer.rfind('<')
+                        if last_bracket_idx != -1:
+                            potential_prefix = buffer[last_bracket_idx:]
+                            # 检查这个 "<..." 是否有可能是我们目标标签的前缀
+                            is_prefix = any(tag.startswith(potential_prefix) for tag in tags)
+                            
+                            if is_prefix:
+                                # 确认是被截断的标签前缀，安全输出 '<' 之前的内容，把前缀留在 buffer 里等下一个 chunk
+                                if last_bracket_idx > 0:
+                                    yield ("REASONING" if in_thought_block else "CONTENT"), buffer[:last_bracket_idx]
+                                buffer = buffer[last_bracket_idx:]
+                            else:
+                                # 只是普通的字符，比如数学公式 "1 < 2"，直接全部输出
+                                if buffer:
+                                    yield ("REASONING" if in_thought_block else "CONTENT"), buffer
+                                buffer = ""
+                        else:
+                            # 没有任何 '<' 符号，绝对安全，全部输出并清空
+                            if buffer:
+                                yield ("REASONING" if in_thought_block else "CONTENT"), buffer
+                            buffer = ""
                 break
                 
             except Exception as e:
