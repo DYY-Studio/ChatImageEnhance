@@ -46,7 +46,7 @@ if 'proxy_url' not in st.session_state:
 if 'github_token' not in st.session_state:
     st.session_state['github_token'] = localS.getItem('github_token') or ""
 if 'reasoning_effort' not in st.session_state:
-    st.session_state['reasoning_effort'] = "minimal"
+    st.session_state['reasoning_effort'] = None
 
 @st.cache_resource
 def get_openai_client(base_url: str, api_key: str, proxy_url: str):
@@ -125,8 +125,11 @@ with st.sidebar:
 
         with st.expander("高级"):
             reasoning_effort = st.selectbox(
-                "推理努力 Reasoning Effort", ['minimal', 'low', 'medium', 'high'], key="reasoning_effort"
+                "推理努力 Reasoning Effort", ['default', 'minimal', 'low', 'medium', 'high']
             )
+            if reasoning_effort == "default":
+                reasoning_effort = None
+            st.session_state['reasoning_effort'] = reasoning_effort
 
     with st.expander("预览"):
         def clear_img_cache():
