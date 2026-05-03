@@ -110,7 +110,7 @@ with st.sidebar:
             get_models()
         
         # 添加无模型选项用于测试
-        model_options = ["🚫 无模型 (测试模式)"] + (st.session_state.models or [])
+        model_options = ["无模型 (测试模式)"] + (st.session_state.models or [])
         selected_model = st.selectbox(
             "模型", 
             options = model_options,
@@ -118,7 +118,7 @@ with st.sidebar:
         )
         
         # 如果选择了无模型选项，将selected_model设为None
-        if selected_model == "🚫 无模型 (测试模式)":
+        if selected_model == "无模型 (测试模式)":
             selected_model = None
 
     with st.expander("预览"):
@@ -386,10 +386,8 @@ if user_feedback:
         st.warning("请输入API URL")
         st.stop()
     
-    # 如果选择了模型但未实际选择（即不是测试模式），则警告
-    if selected_model is None and "messages" in st.session_state and len(st.session_state.messages) > 0:
-        # 已经有历史记录说明之前用过模型，现在切换到无模型模式需要提示
-        pass  # 允许在测试模式下继续
+    if selected_model is None:
+        pass
     
     # 1. 记录人类用户的输入
     user_feedback_msg = {"role": "user", "content": user_feedback}
@@ -401,7 +399,7 @@ if user_feedback:
         last_assistant_msg = next(
             (
                 m for m in reversed(st.session_state.messages[:-1]) 
-                if m['role'] == 'assistant' and "image" in m
+                if m['role'] == 'assistant' and "image" in m and "test_mode" not in m
             ), 
             None
         )
@@ -449,30 +447,9 @@ if user_feedback:
                 "image": best_bgr,
                 "eval_code": "# 无模型测试模式，未生成评价代码",
                 "process_code": "# 无模型测试模式，未生成处理代码",
-                "best_params": best_params
-            })
-            
-            st.rerun()
-
-        # 检查是否为无模型测试模式
-        if not selected_model:
-            st.info("🧪 当前处于【无模型测试模式】，直接返回原图。")
-            
-            # 直接使用原图作为"增强结果"
-            best_bgr = img_bgr.copy()
-            best_params = {"mode": "test_no_llm", "info": "无模型测试模式，未进行任何处理"}
-            
-            # 更新会话状态
-            st.session_state['best_bgr'] = best_bgr
-            
-            # 将系统的回应和新图像记入历史记录
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": "✅ 【测试模式】已返回原图。请选择一个有效的模型以启用真正的 AI 图像增强功能。",
-                "image": best_bgr,
-                "eval_code": "# 无模型测试模式，未生成评价代码",
-                "process_code": "# 无模型测试模式，未生成处理代码",
-                "best_params": best_params
+                "best_params": best_params,
+                "new_tool": None,
+                "test_mode": True
             })
             
             st.rerun()
