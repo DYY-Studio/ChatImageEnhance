@@ -46,7 +46,7 @@ def get_thumbnail_img(raw_array: np.ndarray, max_side: int = 800, interpolation:
         return enc_img.tobytes()
     
 @st.cache_data
-def get_thumbnail_img_base64(raw_array: np.ndarray, max_side: int = 800, interpolation: int = cv2.INTER_LANCZOS4) -> bytes:
+def get_thumbnail_img_base64(raw_array: np.ndarray, max_side: int = 800, interpolation: int = cv2.INTER_LANCZOS4) -> str:
     h, w = raw_array.shape[:2]
     current_max = max(h, w)
     if current_max > max_side:
