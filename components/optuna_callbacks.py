@@ -91,8 +91,8 @@ class StOptunaCallbackImg:
             if self.previous_best_bgr is not None:
                 with self.image.container():
                     self.create_image_comparison_widget(
-                        get_thumbnail_img(self.previous_best_bgr, self.max_side, self.interpolate), 
-                        get_thumbnail_img_nocache(best_img_bgr, self.max_side, self.interpolate),
+                        get_thumbnail_img(self.previous_best_bgr, 'binary', self.max_side, self.interpolate), 
+                        get_thumbnail_img_nocache(best_img_bgr, 'binary', self.max_side, self.interpolate),
                         "上一轮结果" if not self.compare_to_raw else "原图",
                         "当前最佳",
                     )
