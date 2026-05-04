@@ -1,10 +1,7 @@
 import streamlit as st
 import cv2
 import numpy as np
-import httpx
-import yaml
 
-from openai import OpenAI, DefaultHttpxClient
 from queue import Queue
 from streamlit_local_storage import LocalStorage
 
