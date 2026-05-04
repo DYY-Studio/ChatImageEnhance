@@ -28,7 +28,7 @@ def image_analyze():
                     def plan_stream_wrapper():
                         global analyze_result
                         # 将评价指标一并传给 Planner
-                        for t, body in planner.execute_stream(st.session_state['evaluator'].get_profile_yaml(), img_rgb):
+                        for t, body in planner.execute_stream(st.session_state['evaluator'].get_profile_yaml(), img_rgb if st.session_state['is_visual_model'] else None):
                             if t in ["STREAM.REASONING", "STREAM.CONTENT"]:
                                 yield body
                             elif t == "FINISH":

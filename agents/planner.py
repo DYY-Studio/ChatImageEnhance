@@ -114,7 +114,7 @@ class PlannerAgent(BaseAgent):
     def execute_stream(
         self, 
         user_intent: str, 
-        user_img_rgb: np.ndarray
+        user_img_rgb: np.ndarray | None = None
     ) -> Generator[tuple[str, str], None, None]:
         """
         :return STREAM.REASONING: 流式返回思考内容

@@ -88,6 +88,8 @@ with st.sidebar:
             key="selected_model"
         )
 
+        is_visual_model = st.toggle("该模型支持视觉输入", key="is_visual_model")
+
         with st.expander("高级"):
             reasoning_effort = st.selectbox(
                 "推理努力 Reasoning Effort", ['default', 'minimal', 'low', 'medium', 'high']
