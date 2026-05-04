@@ -60,21 +60,6 @@ def render_message_content(msg, index: int):
         if st.button("🚮 删除本轮对话", on_click=delete_message, args=[index], key=f"del_btn_{id(msg)}_{index}"):
             st.rerun()
     else:
-        prev_image = get_previous_img(index, ignore_test_mode=False)
-
-        with st.container(border=True):
-            comp_target = "原图"
-            if prev_image is not None:
-                comp_target = st.radio("对比对象", ["原图", "上一轮"], horizontal=True)
-
-            image_comparison(
-                get_thumbnail_img_wrapper(st.session_state['img_bgr'], 'b64') if comp_target == "原图" else get_thumbnail_img_wrapper(prev_image, 'b64'),
-                get_thumbnail_img_wrapper(st.session_state['best_bgr'], 'b64'),
-                get_thumbnail_size(st.session_state['best_bgr'], st.session_state['preview_img_max_side'])[1],
-                comp_target,
-                "最新"
-            )
-
         with st.expander("🛠️ 查看此轮生成的代码与最优参数"):
             with st.expander("评价逻辑 (Evaluation Code)"):
                 st.code(msg.get("eval_code", "# 无评价代码"), language="python")
@@ -127,6 +112,21 @@ def render_message_content(msg, index: int):
                     st.button("🆕 保存新工具", disabled=True)
                 else:
                     st.button("🆕 保存新工具", on_click=save_tool, args=[msg['new_tool']])
+
+        prev_image = get_previous_img(index, ignore_test_mode=False)
+
+        with st.container(border=False):
+            comp_target = "原图"
+            if prev_image is not None:
+                comp_target = st.pills("对比对象", ["原图", "上一轮"], default="原图", required=True)
+
+            image_comparison(
+                get_thumbnail_img_wrapper(st.session_state['img_bgr'], 'b64') if comp_target == "原图" else get_thumbnail_img_wrapper(prev_image, 'b64'),
+                get_thumbnail_img_wrapper(st.session_state['best_bgr'], 'b64'),
+                get_thumbnail_size(st.session_state['best_bgr'], st.session_state['preview_img_max_side'])[1],
+                comp_target,
+                "最新"
+            )
 
 def generate_user_prompt(
     user_feedback: str,

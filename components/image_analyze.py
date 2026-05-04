@@ -11,9 +11,10 @@ def image_analyze():
         if st.button("💡 不知如何描述？让 AI 分析", key="ai_planner_btn", width='stretch', disabled=start_analyze):
             start_analyze = True
             # 1. 模拟用户发起了分析请求
-            st.session_state.messages.append({"role": "user", "content": "请帮我分析这张图像的问题，并给出增强建议。"})
+            user_msg = {"role": "user", "content": "请帮我分析这张图像的问题，并给出增强建议。"}
+            st.session_state.messages.append(user_msg)
             with st.chat_message("user"):
-                st.markdown("请帮我分析这张图像的问题，并给出增强建议。")
+                render_message_content(user_msg, len(st.session_state.messages) - 1)
 
             # 2. 立即触发 AI 分析流
             with st.chat_message("assistant"):
@@ -26,7 +27,7 @@ def image_analyze():
                     plan_placeholder = st.empty()
                     
                     def plan_stream_wrapper():
-                        global analyze_result
+                        nonlocal analyze_result
                         # 将评价指标一并传给 Planner
                         for t, body in planner.execute_stream(st.session_state['evaluator'].get_profile_yaml(), img_rgb if st.session_state['is_visual_model'] else None):
                             if t in ["STREAM.REASONING", "STREAM.CONTENT"]:
