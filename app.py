@@ -136,15 +136,10 @@ with st.sidebar:
             st.session_state['reasoning_effort'] = reasoning_effort
 
     with st.expander("预览", expanded=True):
-        def clear_img_cache():
-            get_thumbnail_img_rgb_array.clear()
-            get_thumbnail_img.clear()
-            get_thumbnail_img_base64.clear()
-
         preview_img_max_side = st.slider(
             "预览图像最长边 (px)", 
             300, 4000, 800, step=25, 
-            on_change=clear_img_cache,
+            on_change=get_thumbnail_img.clear,
             help="通过缩小预览图像尺寸提高加载速度并降低内存使用"
         )
 
@@ -154,7 +149,7 @@ with st.sidebar:
         preview_img_scale = st.selectbox(
             "预览图像缩小算法", inter_options, 
             format_func=inter_mapping.get, 
-            on_change=clear_img_cache
+            on_change=get_thumbnail_img.clear
         )
 
     with st.expander("代码检索", expanded=True):
@@ -205,30 +200,16 @@ with st.sidebar:
 
 upload = st.file_uploader("上传图像", ["png", "jpg", "jpeg"])
     
-def get_thumbnail_img_wrapper(raw_array: np.ndarray) -> bytes | None:
+def get_thumbnail_img_wrapper(
+    raw_array: np.ndarray, 
+    mode: Literal["binary", "b64", "array"]
+) -> bytes | str | np.ndarray | None:
     global preview_img_max_side, preview_img_scale
-    return get_thumbnail_img(raw_array, preview_img_max_side, preview_img_scale)
-
-def get_thumbnail_img_rgb_array_wrapper(raw_array: np.ndarray) -> np.ndarray:
-    global preview_img_max_side, preview_img_scale
-    return get_thumbnail_img_rgb_array(raw_array, preview_img_max_side, preview_img_scale)
-
-def get_thumbnail_img_base64_wrapper(raw_array: np.ndarray) -> str | None:
-    global preview_img_max_side, preview_img_scale
-    return get_thumbnail_img_base64(raw_array, preview_img_max_side, preview_img_scale)
-
-def get_thumbnail_size(raw_array: np.ndarray) -> tuple[int, int]:
-    global preview_img_max_side
-    h, w = raw_array.shape[:2]
-    current_max = max(h, w)
-    if current_max > preview_img_max_side:
-        scale = preview_img_max_side / current_max
-        return (int(w * scale), int(h * scale))
-    return (w, h)
+    return get_thumbnail_img(raw_array, mode, preview_img_max_side, preview_img_scale)
 
 if upload:
     img_bgr = load_bgr_img_from_file(upload)
-    img_bgr_preview_bytes = get_thumbnail_img_wrapper(img_bgr)
+    img_bgr_preview_bytes = get_thumbnail_img_wrapper(img_bgr, 'binary')
 
 if 'messages' not in st.session_state:
     st.session_state['messages'] = []
@@ -297,9 +278,9 @@ def render_message_content(msg, index: int):
                 comp_target = st.radio("对比对象", ["原图", "上一轮"], horizontal=True)
 
             image_comparison(
-                get_thumbnail_img_base64_wrapper(img_bgr) if comp_target == "原图" else get_thumbnail_img_base64_wrapper(prev_image),
-                get_thumbnail_img_base64_wrapper(st.session_state['best_bgr']),
-                get_thumbnail_size(st.session_state['best_bgr']),
+                get_thumbnail_img_wrapper(img_bgr, 'b64') if comp_target == "原图" else get_thumbnail_img_wrapper(prev_image, 'b64'),
+                get_thumbnail_img_wrapper(st.session_state['best_bgr'], 'b64'),
+                get_thumbnail_size(st.session_state['best_bgr'], preview_img_max_side)[1],
                 comp_target,
                 "最新"
             )
