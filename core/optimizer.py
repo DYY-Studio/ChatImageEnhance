@@ -78,7 +78,7 @@ class BayesianOptimizer:
 
         logger.info(f"BASE: {base_img.shape[1]}x{base_img.shape[0]}")
         if orig_img is not None:
-            logger.info(f"ORIG: {base_img.shape[1]}x{base_img.shape[0]}")
+            logger.info(f"ORIG: {orig_img.shape[1]}x{orig_img.shape[0]}")
 
         def objective(trial: optuna.trial.Trial):
             nonlocal code_str, evaluate_code_str, base_img
