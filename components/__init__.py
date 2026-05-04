@@ -1,8 +1,11 @@
 import streamlit as st
 import yaml
+import numpy as np
 
 from components.image_comparison import image_comparison
-from utils import *
+from utils import get_encoded_img, get_thumbnail_img, get_thumbnail_size, get_executable_dir
+
+from typing import Literal
 
 def get_thumbnail_img_wrapper(
     raw_array: np.ndarray, 

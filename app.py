@@ -11,7 +11,6 @@ from core.searcher import Searcher
 
 from agents.coder import CoderAgent
 from agents.evaluator import EvaluatorAgent
-from agents.planner import PlannerAgent
 from agents.toolmaker import ToolMakerAgent
 
 from components.optuna_callbacks import StOptunaCallbackImg
