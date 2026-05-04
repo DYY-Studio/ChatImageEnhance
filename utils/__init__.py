@@ -117,6 +117,7 @@ def get_openai_client(base_url: str, api_key: str, proxy_url: str):
 
 def clear_models():
     st.session_state.models = None
+    get_openai_client.clear()
 
 def get_models():
     if not st.session_state.api_url or (st.session_state.has_api_key and not st.session_state.api_key):

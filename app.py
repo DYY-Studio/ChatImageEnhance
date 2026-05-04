@@ -77,8 +77,8 @@ with st.sidebar:
         )
         api_key = ""
         if (has_api_key := st.toggle("API KEY?", key="has_api_key")):
-            api_key = st.text_input("API KEY", type='password', key="api_key")
-        proxy_url = st.text_input("HTTP 代理服务器", placeholder="http://localhost:7890", key="proxy_url")
+            api_key = st.text_input("API KEY", type='password', key="api_key", on_change=get_openai_client.clear)
+        proxy_url = st.text_input("HTTP 代理服务器", placeholder="http://localhost:7890", key="proxy_url", on_change=get_openai_client.clear)
         fetch_button = st.button("获取模型列表", disabled = True if not api_url else False, width="stretch")
         if fetch_button:
             get_models()
