@@ -17,6 +17,7 @@ from components.optuna_callbacks import StOptunaCallbackImg
 from components.tool_search import StSearch
 from components.llm_response_handler import StStreamResHandler
 from components.image_analyze import image_analyze
+from components.tools_playground import render_playground
 from components import get_thumbnail_img_wrapper, render_message_content, get_previous_img, generate_user_prompt
 
 from utils import *
@@ -49,6 +50,8 @@ if 'process_img_max_side' not in st.session_state:
     st.session_state['process_img_max_side'] = 1500
 if 'img_bgr' not in st.session_state:
     st.session_state['img_bgr'] = None
+if 'running' not in st.session_state:
+    st.session_state['running'] = False
 
 st.title("✨ ChatImageEnhance")
 st.caption("LLM Agent + Optuna 人类在环图像增强系统")
@@ -64,6 +67,12 @@ def get_cv2_inter_mapping() -> dict[int, str]:
 
 with st.sidebar:
     st.header("设置")
+    with st.expander("模式", expanded=True):
+        st.segmented_control(
+            "执行模式", ["Chat", "Playground"], 
+            required=True, default="Chat", key='ui_scene',
+            help="选择Playground以查看并试用所有可用的算子"
+        )
     with st.expander("模型", expanded=True):
         api_url = st.text_input(
             "API URL (OpenAI 兼容端点)", 
@@ -172,6 +181,8 @@ if 'best_bgr' not in st.session_state:
     st.session_state['best_bgr'] = None
 if 'evaluator' not in st.session_state:
     st.session_state['evaluator'] = None
+if 'ui_scene' not in st.session_state:
+    st.session_state['ui_scene'] = ""
 
 @st.cache_resource
 def get_evaluator(raw_array: np.ndarray):
@@ -193,6 +204,7 @@ if upload:
         caption=f"{img_bgr.shape[1]}x{img_bgr.shape[0]}, {img_bgr.shape[2]} Channel(s)"
     )
     st.divider()
+
 else:
     st.session_state.messages.clear()
     st.session_state['best_bgr'] = None
@@ -202,7 +214,13 @@ else:
     get_thumbnail_img.clear()
     get_evaluator.clear()
 
-# --- 渲染历史聊天记录 ---
+if st.session_state.ui_scene == "Playground":
+    render_playground()
+
+if st.session_state.ui_scene != "Chat":
+    st.stop()
+    # --- 渲染历史聊天记录 ---
+
 for i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         render_message_content(msg, i)
