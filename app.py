@@ -204,7 +204,6 @@ if upload:
         caption=f"{img_bgr.shape[1]}x{img_bgr.shape[0]}, {img_bgr.shape[2]} Channel(s)"
     )
     st.divider()
-
 else:
     st.session_state.messages.clear()
     st.session_state['best_bgr'] = None
@@ -213,6 +212,7 @@ else:
     load_bgr_img_from_file.clear()
     get_thumbnail_img.clear()
     get_evaluator.clear()
+    st.stop()
 
 if st.session_state.ui_scene == "Playground":
     render_playground()
