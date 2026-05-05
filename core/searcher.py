@@ -7,14 +7,28 @@ from datetime import datetime, UTC
 import logging
 import time
 import json
+import yaml
 
 logger = logging.getLogger("Searcher")
 
 class Searcher:
-    def __init__(self, github_token: str, llm_client, model_name: str = "gpt-4o-mini", temperature: float = 0.1):
+    def __init__(self, 
+        github_token: str, 
+        llm_client,
+        model_name: str = "gpt-4o-mini",
+        temperature: float = 0.1,
+        reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None,
+        **kwargs
+    ):
         auth = Auth.Token(github_token)
         self.github = Github(auth=auth)
-        self.searcher = SearcherAgent(llm_client, model_name, github_client=self.github, temperature=temperature)
+        self.searcher = SearcherAgent(
+            llm_client, model_name, 
+            github_client=self.github, 
+            temperature=temperature,
+            reasoning_effort=reasoning_effort,
+            **kwargs
+        )
 
     def use_tool(self, tool_name: str, params: dict):
         if (func := getattr(self.searcher, f"_{tool_name}", False)):
@@ -27,7 +41,7 @@ class Searcher:
 
     def search(self, prompt: str, steps_limit: int = 30, interval: float = 0.5) -> Generator[tuple[str, str | dict], None, None]:
         content: dict | None = None
-        thinks: str = f"用户输入: {prompt.strip()}"
+        thinks: str = f"用户输入: {prompt.strip()}\n用户限制：最多执行{steps_limit}次"
         tool_result: str = ''
 
         rate_limit = self.github.get_rate_limit().resources
@@ -39,7 +53,7 @@ class Searcher:
         while content is None or 'tool' not in content or content['tool'] != 'submit_findings':
             times += 1
             start_time = datetime.now(UTC)
-            for t, chunk in self.searcher.execute_stream(thinks + tool_result):
+            for t, chunk in self.searcher.execute_stream(thinks, tool_result):
                 if t == "STREAM.REASONING":
                     yield f"SEARCH.REASONING.{times}", chunk
                 elif t == "STREAM.CONTENT":
@@ -60,7 +74,20 @@ class Searcher:
             
             thinks += f"调用{times}: {content['tool']}, {json.dumps(content['params'], ensure_ascii=False)}"
             tool_result = self.use_tool(content['tool'], content['params']).strip(' \n')
-            tool_result = f"\n\n工具调用结果:\n```\n{tool_result}\n```"
+            try:
+                yield 'TOOL_CALL', {
+                    'tool': content['tool'],
+                    'params': f"```\n{json.dumps(content['params'], indent=2, ensure_ascii=False)}\n```",
+                    'result': 
+                        f"```\n{json.dumps(yaml.load(tool_result.strip('`'), yaml.FullLoader), indent=2, ensure_ascii=False)}\n```"
+                        if content['tool'] != 'read_file_content' else f"```\n{tool_result.strip('`')}\n```"
+                }
+            except:
+                yield 'TOOL_CALL', {
+                    'tool': content['tool'],
+                    'params': f"```\n{json.dumps(content['params'], indent=2, ensure_ascii=False)}\n```",
+                    'result': f"```\n{tool_result.strip('`')}\n```"
+                }
             logger.info(tool_result.strip('\n'))
 
             if (duration := (datetime.now(UTC) - start_time).total_seconds()) < interval:
