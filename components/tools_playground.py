@@ -50,9 +50,15 @@ def render_playground(container: DeltaGenerator | None = None):
                 with param_tune_col:
                     with st.container(border=True):
                         if 'range' in param:
-                            params_try[name] = st.slider(name, min_value=param['range'][0], max_value=param['range'][-1])
+                            params_try[name] = st.slider(
+                                name, min_value=param['range'][0], max_value=param['range'][-1],
+                                help=param.get("description")
+                            )
                         elif 'options' in param:
-                            params_try[name] = st.selectbox(name, param['options'])
+                            params_try[name] = st.selectbox(
+                                name, param['options'],
+                                help=param.get("description")
+                            )
             with param_tune_col:
                 do_try = st.toggle("自动尝试", disabled=st.session_state['img_bgr'] is None)
                 if not do_try:
