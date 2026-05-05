@@ -6,7 +6,6 @@ import logging
 
 from agents.evaluator import EvaluatorAgent
 from agents.coder import CoderAgent
-from agents.searcher import SearcherAgent
 from agents.toolmaker import ToolMakerAgent
 
 from sandbox.executor import SandboxExecutor
@@ -22,7 +21,12 @@ class Orchestrator:
     """
     管理整个 State 流程与报错重试逻辑 (类似 LangGraph 的大脑)。
     """
-    def __init__(self, coder: CoderAgent, evaluator_agent: EvaluatorAgent, toolmaker_agent: ToolMakerAgent, max_llm_retries: int = 3):
+    def __init__(self, 
+        coder: CoderAgent, 
+        evaluator_agent: EvaluatorAgent, 
+        toolmaker_agent: ToolMakerAgent,
+        max_llm_retries: int = 3
+    ):
         # 初始化各个组件
         # self.planner = PlannerAgent(...)
         self.coder = coder
