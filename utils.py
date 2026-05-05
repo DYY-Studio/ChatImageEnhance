@@ -74,7 +74,7 @@ def get_thumbnail_img(
 
 def get_thumbnail_img_nocache(
     raw_array: np.ndarray, 
-    mode: Literal["binary", "base64", "array"],
+    mode: Literal["binary", "b64", "array"],
     max_side: int = 800, 
     interpolation: int = cv2.INTER_AREA,
     img_format: Literal[".jpg", ".png"] = ".jpg",
@@ -85,12 +85,12 @@ def get_thumbnail_img_nocache(
         resized_array = cv2.resize(raw_array, new_size, interpolation=interpolation)
     else:
         resized_array = raw_array
-    if mode in ("binary", "base64", ):
+    if mode in ("binary", "b64", ):
         succ, enc_img = cv2.imencode(img_format, resized_array, img_enc_params)
         if succ:
             if mode == "binary":
                 return enc_img.tobytes()
-            elif mode == "base64":
+            elif mode == "b64":
                 return f"data:image/{'jpeg' if img_format == '.jpg' else 'png'};base64,{base64.b64encode(enc_img.tobytes()).decode()}"
         else:
             return None
