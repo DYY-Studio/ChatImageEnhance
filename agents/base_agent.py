@@ -26,7 +26,7 @@ class BaseAgent:
         model_name: str, 
         system_prompt: str, 
         temperature: float = 0.1,
-        reasoning_effort: Literal["minimal", "low", "medium", "high"] = "minimal",
+        reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None,
         **kwargs
     ):
         """
@@ -100,6 +100,13 @@ class BaseAgent:
         如果计划流式输出显示，可能需要更改，与前端沟通一下如何实现
         """
 
+        def wait_to_retry():
+            nonlocal attempt, max_retries
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)  # 指数退避重试 (1s, 2s, 4s...)
+            else:
+                raise RuntimeError(f"LLM 调用最终失败，请检查网络或模型服务: {str(e)}")
+
         for attempt in range(max_retries):
             try:
                 # 这里假设使用的是 OpenAI 或兼容的 API SDK
@@ -112,13 +119,16 @@ class BaseAgent:
                     # response_format={ "type": "json_object" } # 如果模型支持强制 JSON 模式，可以开启
                 )
                 return response.choices[0].message.content
-                
+            except (openai.InternalServerError, openai.RateLimitError) as e:
+                logging.warning(f"LLM 调用失败：HTTP {e.status_code} {e.message} (尝试 {attempt + 1}/{max_retries})")
+                wait_to_retry()
+            except (openai.APIConnectionError, openai.APITimeoutError) as e:
+                logging.warning(f"LLM 调用失败: {e.message} (尝试 {attempt + 1}/{max_retries})")
+                wait_to_retry()
+            except openai.APIStatusError as e:
+                raise RuntimeError(f"LLM 调用失败：HTTP {e.status_code} {e.message}, {str(e)}")
             except Exception as e:
-                logging.warning(f"LLM 调用失败 (尝试 {attempt + 1}/{max_retries}): {str(e)}")
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)  # 指数退避重试 (1s, 2s, 4s...)
-                else:
-                    raise RuntimeError(f"LLM 调用最终失败，请检查网络或模型服务: {str(e)}")
+                raise RuntimeError(f"程序错误: {str(e)}")
                 
     def _call_llm_stream(self, 
         user_prompt: str = '', 
@@ -133,6 +143,13 @@ class BaseAgent:
         :param REASONING: 表示该块为思考内容
         :param CONTENT: 表示该块为结果内容
         """
+
+        def wait_to_retry():
+            nonlocal attempt, max_retries
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)  # 指数退避重试 (1s, 2s, 4s...)
+            else:
+                raise RuntimeError(f"LLM 调用最终失败，请检查网络或模型服务: {str(e)}")
 
         in_thought_block = False
         buffer = ""
@@ -210,12 +227,16 @@ class BaseAgent:
                                 buffer = ""
                 break
                 
+            except (openai.InternalServerError, openai.RateLimitError) as e:
+                logging.warning(f"LLM 调用失败：HTTP {e.status_code} {e.message} (尝试 {attempt + 1}/{max_retries})")
+                wait_to_retry()
+            except (openai.APIConnectionError, openai.APITimeoutError) as e:
+                logging.warning(f"LLM 调用失败: {e.message} (尝试 {attempt + 1}/{max_retries})")
+                wait_to_retry()
+            except openai.APIStatusError as e:
+                raise RuntimeError(f"LLM 调用失败：HTTP {e.status_code} {e.message}, {str(e)}")
             except Exception as e:
-                logging.warning(f"LLM 调用失败 (尝试 {attempt + 1}/{max_retries}): {str(e)}")
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)  # 指数退避重试 (1s, 2s, 4s...)
-                else:
-                    raise RuntimeError(f"LLM 调用最终失败，请检查网络或模型服务: {str(e)}")
+                raise RuntimeError(f"程序错误: {str(e)}")
 
     def _extract_json(self, text: str) -> Optional[dict[str, Any]]:
         """

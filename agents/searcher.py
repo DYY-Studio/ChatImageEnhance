@@ -16,7 +16,7 @@ class SearcherAgent(BaseAgent):
         model_name: str = "gpt-4o-mini", 
         github_client: Github | None = None, 
         temperature: float = 0.1,
-        reasoning_effort: Literal["minimal", "low", "medium", "high"] = "minimal",
+        reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None,
         **kwargs
     ):
         """
@@ -53,7 +53,7 @@ class SearcherAgent(BaseAgent):
                 }
                 for repo in self.github_client.search_repositories(query, 'stars', 'desc').get_page(0)
             ], allow_unicode=True, indent=2)
-            self.query_cache[query] = yaml_text if yaml_text != '[]' else 'No result(s)'
+            self.query_cache[query] = yaml_text if yaml_text != '[]' else 'No result'
         return self.query_cache[query]
 
     def _get_repo_overview(self, repo_name: str) -> str:
@@ -156,12 +156,14 @@ class SearcherAgent(BaseAgent):
    - 我刚才看了什么？得到了什么结果？
    - 这个结果为什么有用/没用？
    - 我下一步打算调用哪个工具？为什么？
+   - (可选，如果检查 **多个** 仓库后，发现确实无法在单一仓库得到全部功能) 该仓库实现某个功能的核心逻辑是什么？
 2. **过滤噪音:** 绝对不要进入或读取以下目录和文件：`tests/`, `docs/`, `assets/`, `images/`, `node_modules/`, `.git/`, 配置文件（如 `.gitignore`, `package-lock.json` 等）。只关注核心源码。
 3. **步数限制:** 你的探索必须高效。如果连续在 5 个不同的文件中都没有找到核心逻辑，必须立即放弃该仓库，去查看下一个仓库。
 4. **切勿生造代码:** 你的任务是“寻找和搬运”，**绝对不要**自己编写业务逻辑代码或杜撰算法步骤。如果没找到，直接提交“未找到”。
 5. **审查依赖:** 在阅读代码时，务必注意代码是否可以仅使用以下几个库实现（直接可运行或是改编后可运行）：`numpy`, `cv2` (opencv-contrib-python), `skimage` (scikit-image), `scipy`, `math`，它们是后续 ToolMakerAgent 成功运行的关键。
 6. **跨语言参考:** **当且仅当** 多次尝试后依然无法找到完全匹配的代码（如：只有GLSL或其他语言而没有Python），允许对其他语言的仓库代码进行总结提炼。这种情况下，`code_snippets`提交的内容可以是原代码，也可以是伪代码或转写的Python。
 7. **错误处理:** 如果工具报告网络错误等你无法修复的错误，直接提交“未找到”，在 `summary` 字段中说明遭遇了错误。
+8. **见好就收:** 如果寻找多个仓库后仍有部分要求的功能无法实现，选择能够实现最多功能进行提交，不要因为贪心而超出步数限制。
 
 # Search Guidance
 A query can contain any combination of search qualifiers supported on GitHub. The format of the search query is:
@@ -220,23 +222,26 @@ You can search repositories based on the language of the code in the repositorie
     
     def generate_prompt(self, 
         user_intent: str = '', 
-        init_details: str = '', 
-        previous_errors: str = None,
+        tool_result: str = '', 
     ) -> str:
         user_prompt = ''
         if user_intent:
-            user_prompt += f"{user_intent}"
-        if init_details:
-            user_prompt += f"原始图像量化信息：{init_details}\n"
-        if previous_errors:
-            user_prompt += f"上一轮代码执行错误信息：{previous_errors}\n请优先修复该错误再生成代码\n"
+            user_prompt += f"# 历史\n{user_intent}"
+
+        if len(self.query_cache) > 0:
+            cached_query, cached_result = next(iter(self.query_cache.items()))
+            if cached_query != 'No result' and cached_result.strip('\n ') != tool_result.strip('\n '):
+                user_prompt += f"\n\n# 上次 search_github_repos('{cached_query}') 结果\n```\n{cached_result}\n```"
+
+        if tool_result:
+            user_prompt += f"\n\n# 工具调用结果\n```\n{tool_result}\n```"
+
         logger.info(f"注入提示词：\n{user_prompt}")
         return user_prompt
 
     def generate_code_stream(self, 
         user_intent: str = '', 
-        init_details: str = '', 
-        previous_errors: str = None,
+        tool_result: str = '', 
     ) -> Generator[tuple[str, str], None, None]:
         """
         核心方法：根据用户意图生成/修复带Optuna trial的图像增强代码
@@ -253,7 +258,7 @@ You can search repositories based on the language of the code in the repositorie
         logger.info("开始调用LLM生成图像增强代码")
         llm_response = ''
         for t, chunk in self._call_llm_stream(self.generate_prompt(
-            user_intent, init_details, previous_errors
+            user_intent, tool_result
         )):
             yield f'STREAM.{t}', chunk
             if t == "CONTENT":
@@ -266,8 +271,7 @@ You can search repositories based on the language of the code in the repositorie
 
     def generate_code(self, 
         user_intent: str = '', 
-        plan_steps: list = [], 
-        previous_errors: str = None,
+        tool_result: str = '', 
     ) -> str:
         """
         核心方法：根据用户意图生成/修复带Optuna trial的图像增强代码
@@ -281,7 +285,7 @@ You can search repositories based on the language of the code in the repositorie
         # 调用LLM生成代码（继承BaseAgent的带重试机制的LLM调用）
         logger.info("开始调用LLM生成图像增强代码")
         llm_response = self._call_llm(self.generate_prompt(
-            user_intent, plan_steps, previous_errors
+            user_intent, tool_result
         ))
         
         # 提取并清洗代码块
@@ -289,7 +293,7 @@ You can search repositories based on the language of the code in the repositorie
         logger.info(f"成功生成代码：\n{code}")
         return code
 
-    def execute(self, user_intent: str = '', init_details: str = '', previous_errors: str = None) -> str:
+    def execute(self, user_intent: str = '', tool_result: str = '') -> str:
         """
         实现父类BaseAgent的抽象execute方法，作为Agent对外的统一执行入口
         
@@ -299,7 +303,7 @@ You can search repositories based on the language of the code in the repositorie
         :return: 最终生成的可执行Python代码字符串
         """
         try:
-            return self.generate_code(user_intent, init_details, previous_errors)
+            return self.generate_code(user_intent, tool_result)
         except Exception as e:
             logger.error(f"CoderAgent执行失败：{str(e)}", exc_info=True)
             raise RuntimeError(f"编码Agent生成代码失败：{str(e)}") from e
@@ -307,8 +311,7 @@ You can search repositories based on the language of the code in the repositorie
     def execute_stream(
         self, 
         user_intent: str = '', 
-        init_details: str = '', 
-        previous_errors: str = None
+        tool_result: str = '', 
     ) -> Generator[tuple[str, str], None, None]:
         """
         :return STREAM.REASONING: 流式返回思考内容
@@ -316,7 +319,7 @@ You can search repositories based on the language of the code in the repositorie
         :return FINISH: 返回清理后的代码
         """
         try:
-            for t, chunk in self.generate_code_stream(user_intent, init_details, previous_errors):
+            for t, chunk in self.generate_code_stream(user_intent, tool_result):
                 yield t, chunk
         except Exception as e:
             logger.error(f"CoderAgent执行失败：{str(e)}", exc_info=True)
