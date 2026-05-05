@@ -1,6 +1,5 @@
 import numpy as np
 import inspect
-import json
 import yaml
 import importlib.util
 import sys
@@ -31,7 +30,7 @@ class ToolRegistry:
 
             if (schema_file := file.with_suffix('.yaml')).exists():
                 try:
-                    schema = yaml.load(schema_file.read_text('utf-8'))
+                    schema = yaml.load(schema_file.read_text('utf-8'), yaml.FullLoader)
                     module = ToolRegistry._load_tool_from_file(
                         f"dynamic_tools_{schema['name']}", str(file.absolute())
                     )
