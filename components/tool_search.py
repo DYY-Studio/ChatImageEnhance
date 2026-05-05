@@ -1,7 +1,7 @@
 import streamlit as st
 
-from streamlit.elements.lib.mutable_status_container import StatusContainer
 from streamlit.delta_generator import DeltaGenerator
+from components.llm_response_handler import StStreamResHandler
 
 from core.searcher import Searcher
 
@@ -12,24 +12,36 @@ def StSearch(
 ):
     with container:
         status = st.status("🌐 搜索 GitHub", state="error")
-        thought = dict()
         status.update(state="running")
         with status:
+            chat_message = st.chat_message("assistant")
+            handler = StStreamResHandler(chat_message, chat_message)
+
             for t, body in searcher.search(tool_request, steps_limt, interval):
                 if t.startswith("THINK"):
-                    with st.chat_message("ai"):
-                        if (value := thought.get(f"SEARCH.REASONING.{t.split('.')[-1]}")):
-                            with st.expander("显示思考"):
-                                st.write(value)
-                        st.write(body)
+                    handler.set_content(body)
+                    chat_message = st.chat_message("assistant")
+                    handler = StStreamResHandler(chat_message, chat_message)
                 elif t.startswith("SEARCH.REASONING"):
-                    if not t in thought:
-                        thought[t] = ''
-                    thought[t] += body
+                    handler.thinking_chunk(body)
+                elif t.startswith("SEARCH.CONTENT"):
+                    handler.thinking_end()
+                    handler.content_chunk(body)
                 elif t in ('SEARCH.API_LIMIT_REACHED', 'SEARCH.STEPS_LIMIT_REACHED'):
-                    st.write('已达到 GitHub Search API 访问上限')
+                    if t == 'SEARCH.STEPS_LIMIT_REACHED':
+                        st.write('🚫 已达到搜索步骤数上限')
+                    elif t == 'SEARCH.API_LIMIT_REACHED':
+                        st.write('🚫 已达到 GitHub Search API 访问上限')
                     status.update(state="error")
                     return None
                 elif t == "SEARCH.FINISH":
                     status.update(state="complete")
                     return body
+                
+                elif t == "TOOL_CALL":
+                    with chat_message:
+                        with st.expander("显示工具调用结果"):
+                            st.table(
+                                body,
+                                border="horizontal",
+                            )

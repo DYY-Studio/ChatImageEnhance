@@ -92,7 +92,8 @@ with st.sidebar:
 
         with st.expander("高级"):
             reasoning_effort = st.selectbox(
-                "推理努力 Reasoning Effort", ['default', 'minimal', 'low', 'medium', 'high']
+                "推理努力 Reasoning Effort", ['default', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+                help="请查询你使用的模型是否支持该字段。部分模型不支持minimal和xhigh。"
             )
             if reasoning_effort == "default":
                 reasoning_effort = None
@@ -208,7 +209,7 @@ for i, msg in enumerate(st.session_state.messages):
 
 user_feedback = st.chat_input(
     '描述你的增强要求或对上轮结果的反馈\n（例如："这张图有些模糊，给我锐化一下" 或 "这版锐化过度了，稍微柔和一点"）', 
-    disabled=not upload
+    disabled=not upload or selected_model == DEBUG_MODEL_NAME
 )
 
 if upload and selected_model != DEBUG_MODEL_NAME:

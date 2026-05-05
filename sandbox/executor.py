@@ -13,22 +13,32 @@ from sandbox.code_checker import AgentCodeChecker, SecurityViolation
 from types import SimpleNamespace
 from typing import Callable
 
-from RestrictedPython import safe_globals
+from RestrictedPython import utility_builtins, safe_builtins
 
 class SandboxExecutor:
     """
     安全、动态执行 LLM 生成的代码。
     """
-    _base_namespace = {
-        "np": np,
-        "cv2": cv2,
-        "optuna": optuna,
-        "skimage": skimage,
-        "scipy": scipy,
-        "math": math,
-        "cv_wrappers": None,
-        "vision_metrics": None
-    }
+    _base_namespace = dict(
+        np = np,
+        cv2 = cv2,
+        optuna = optuna,
+        skimage = skimage,
+        scipy = scipy,
+        __builtins__ = dict(
+            max = max,
+            min = min,
+            sum = sum,
+            all = all,
+            any = any,
+            enumerate = enumerate,
+            reversed = reversed,
+            **safe_builtins
+        ),
+        cv_wrappers = None,
+        vision_metrics = None,
+        **utility_builtins
+    )
 
     _func: Callable[[np.ndarray, optuna.Trial], np.ndarray] | None = None
     _code: int | None = None
@@ -40,7 +50,6 @@ class SandboxExecutor:
         self.timeout = timeout_seconds
         # 占位，防止运行时间过长
         self.registry = global_registry
-        self._base_namespace.update(safe_globals)
 
     @staticmethod
     def get_keys_iters(d):

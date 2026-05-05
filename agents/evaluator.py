@@ -11,7 +11,7 @@ class EvaluatorAgent(BaseAgent):
         llm_client, 
         model_name: str = "gpt-4o-mini", 
         temperature: float = 0.1, 
-        reasoning_effort: Literal["minimal", "low", "medium", "high"] = "minimal",
+        reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None,
         **kwargs
     ):
         super().__init__(llm_client, model_name, self._build_system_prompt(), temperature, reasoning_effort, **kwargs)
