@@ -28,7 +28,8 @@ global_registry.register(
             "range": [10.0, 150.0],
             "description": "坐标空间中滤波器的标准差。值越大，只要颜色足够接近，越远的像素就会相互影响。"
         }
-    }
+    },
+    performance="fast"
 )
 
 # 2. 自适应直方图均衡注册
@@ -47,7 +48,8 @@ global_registry.register(
             "range": [4, 16],
             "description": "网格大小。将图像划分为 M x M 的区域进行局部均衡。建议取 8。"
         }
-    }
+    },
+    performance="fast"
 )
 
 # 3. 伽马校正注册
@@ -61,7 +63,8 @@ global_registry.register(
             "range": [0.1, 3.0],
             "description": "校正系数。1.0 为原图；建议暗光环境搜索 [1.2, 2.2]，强光环境搜索 [0.4, 0.8]。"
         }
-    }
+    },
+    performance="faster"
 )
 
 # 4. 反锐化掩模注册
@@ -80,7 +83,8 @@ global_registry.register(
             "range": [0, 10],
             "description": "锐化阈值。只有相邻像素差值大于此值才进行锐化，设为 0 表示全图锐化处理。"
         }
-    }
+    },
+    performance="medium"
 )
 
 global_registry.register(
@@ -93,7 +97,8 @@ global_registry.register(
             "range": [0.1, 3.0],
             "description": "细节叠加系数。值越大，高频细节越明显。默认 1.0。"
         }
-    }
+    },
+    performance="medium"
 )
 
 global_registry.register(
@@ -106,7 +111,8 @@ global_registry.register(
             "range": [0.0, 2.0],
             "description": "锐化结果的混合比例。1.0 为纯锐化结果，0.0 为原图，介于两者之间为平滑过渡。"
         }
-    }
+    },
+    performance="fast"
 )
 
 # 5. 自动 Canny 边缘检测注册
@@ -120,7 +126,8 @@ global_registry.register(
             "range": [0.2, 0.5],
             "description": "阈值灵敏度。较小的值会产生更严格的边缘（边缘更少），较大的值会产生更丰富的边缘。默认 0.33。"
         }
-    }
+    },
+    performance="faster"
 )
 
 # 6. 智能缩放注册
@@ -152,7 +159,8 @@ global_registry.register(
             "range": [1, 15],
             "description": "模糊核的大小。1表示不模糊，值越大降噪效果越强，但图片也会越模糊。建议 Optuna 在 [1, 3, 5, 7] 中进行离散搜索。"
         }
-    }
+    },
+    performance="very fast"
 )
 
 # 7. 形态学变换注册
@@ -171,7 +179,8 @@ global_registry.register(
             "range": [1, 11],
             "description": "结构元大小。值越大，消除或填补的力度越大。通常取 3 或 5。"
         }
-    }
+    },
+    performance="faster"
 )
 
 # 8. 自适应二值化注册
@@ -191,7 +200,8 @@ global_registry.register(
             "range": [-10, 10],
             "description": "从平均值中减去的常数。正值会让结果更“干净”，负值会保留更多细节。"
         }
-    }
+    },
+    performance="faster"
 )
 
 # 9. 中值滤波注册
@@ -206,7 +216,8 @@ global_registry.register(
             "options": [1, 3, 5, 7, 9],
             "description": "滤波核大小。必须为奇数。值越大去噪能力越强，但会丢失细小结构。"
         }
-    }
+    },
+    performance="faster"
 )
 
 # 10. 自动白平衡注册
@@ -220,7 +231,8 @@ global_registry.register(
             "range": [0.0, 1.0],
             "description": "白平衡的应用强度。如果是不确定的场景，建议从较低的值（如 0.2）开始搜索。"
         }
-    }
+    },
+    performance="medium"
 )
 
 # 11. 引导滤波注册
@@ -239,7 +251,8 @@ global_registry.register(
             "range": [0.001, 0.1],
             "description": "惩罚项（正则化参数）。值越大，保边效果越弱，图像越接近普通模糊。"
         }
-    }
+    },
+    performance="slow"
 )
 
 # global_registry.register(
@@ -301,22 +314,24 @@ global_registry.register(
             "default": 9,
             "description": "处理半径。对于大尺寸图像或明显的宽光晕，需调大此参数。"
         }
-    }
+    },
+    performance="slow"
 )
 
 # 12. Retinex 增强注册
 
-# global_registry.register(
-#     name="Low_Light_Retinex",
-#     func=safe_low_light_retinex,
-#     description="Retinex 图像增强。模拟人类视觉系统对光照的感知，能大幅提升极端暗光下的图像质量，还原物体的本来颜色和细节。注意该算子速度非常慢，谨慎使用！",
-#     params_schema={
-#         "sigma_list": {
-#             "type": "list",
-#             "description": "高斯模糊标准差列表。决定了提取光照背景的尺度，默认 [15, 80, 250] 覆盖高中低频。"
-#         }
-#     }
-# )
+global_registry.register(
+    name="Low_Light_Retinex",
+    func=safe_low_light_retinex,
+    description="Retinex 图像增强。模拟人类视觉系统对光照的感知，能大幅提升极端暗光下的图像质量，还原物体的本来颜色和细节。注意该算子速度非常慢，谨慎使用！",
+    params_schema={
+        "sigma_list": {
+            "type": "list",
+            "description": "高斯模糊标准差列表。决定了提取光照背景的尺度，默认 [15, 80, 250] 覆盖高中低频。"
+        }
+    },
+    performance="very slow"
+)
 
 # 13. 饱和度增强注册
 # global_registry.register(
@@ -342,7 +357,8 @@ global_registry.register(
             "range": [0.0, 5.0],
             "description": "缩放倍数。1.0 为原图，>1 变鲜艳，<1 变灰暗（0 为纯黑白）。"
         }
-    }
+    },
+    performance="faster"
 )
 
 global_registry.register(
@@ -355,7 +371,8 @@ global_registry.register(
             "range": [0.0, 3.0],
             "description": "增强强度。无限趋近于 0 时为原图，1.0 为中等自然增益，2.0 为强力增益，3.0 为极限浓艳。"
         }
-    }
+    },
+    performance="faster"
 )
 
 global_registry.register(
@@ -373,7 +390,8 @@ global_registry.register(
             "range": [-20.0, 20.0],
             "description": "色调值。正数偏洋红（紫），负数偏绿。通常用于修正荧光灯下的偏绿现象。"
         }
-    }
+    },
+    performance="medium"
 )
 
 # 15. 全局色相平移
@@ -387,7 +405,8 @@ global_registry.register(
             "range": [-30, 30],
             "description": "色相旋转角度 (OpenCV 映射域)。0 为原图，轻微调色建议在 [-15, 15] 之间搜索。"
         }
-    }
+    },
+    performance="very fast"
 )
 
 # global_registry.register(
@@ -422,7 +441,8 @@ global_registry.register(
             "range": [11, 31],
             "description": "搜索窗口大小(像素)。在多大的范围内寻找相似的像素块，必须是奇数。值越大降噪效果可能越好，但计算耗时会呈平方级增加。默认 21。"
         }
-    }
+    },
+    performance="slower"
 )
 
 if hasattr(cv2, "xphoto") and hasattr(cv2, "ximgproc"):
@@ -451,7 +471,8 @@ if hasattr(cv2, "xphoto") and hasattr(cv2, "ximgproc"):
                 "range": [0.01, 0.5],
                 "description": "控制阈值灵敏度。较低的值会保留更多前景（但可能引入噪声），较高的值会过滤更多背景。"
             }
-        }
+        },
+        performance="fast"
     )
 
     # 4. 各向异性扩散注册
@@ -475,7 +496,8 @@ if hasattr(cv2, "xphoto") and hasattr(cv2, "ximgproc"):
                 "range": [3, 20],
                 "description": "迭代次数。次数越多平滑越彻底，但耗时也越长。"
             }
-        }
+        },
+        performance="medium"
     )
 
     # 5. HDR细节增强注册
@@ -494,7 +516,8 @@ if hasattr(cv2, "xphoto") and hasattr(cv2, "ximgproc"):
                 "range": [0.1, 1.0],
                 "description": "色彩/范围平滑参数。控制什么程度的色差会被认定为边缘并被增强。"
             }
-        }
+        },
+        performance="slower"
     )
 
     # 6. L0梯度平滑注册
@@ -513,7 +536,8 @@ if hasattr(cv2, "xphoto") and hasattr(cv2, "ximgproc"):
                 "range": [0.01, 0.05],
                 "description": "平滑权重。值越大，抹除的微小纹理越多，色块化越明显。"
             }
-        }
+        },
+        performance="very slow"
     )
 
     # 7. 滚动导向滤波注册
@@ -537,7 +561,8 @@ if hasattr(cv2, "xphoto") and hasattr(cv2, "ximgproc"):
                 "range": [2, 6],
                 "description": "滚动迭代次数。次数越多，纹理被剥离得越干净。"
             }
-        }
+        },
+        performance="slow"
     )
 
 if importlib.util.find_spec("pywt"):
@@ -551,7 +576,8 @@ if importlib.util.find_spec("pywt"):
                 "range": [1, 5],
                 "description": "小波分解层数。层数越高，能去处的低频噪点越多，但耗时增加且可能导致失真。默认 3。"
             }
-        }
+        },
+        performance="slower"
     )
 
 # global_registry.register(
@@ -564,7 +590,8 @@ if importlib.util.find_spec("pywt"):
 #             "range": [0.05, 0.5],
 #             "description": "去噪权重。值越高，图像越平滑（降噪效果越强），但也可能丢失细节。默认 0.1。"
 #         }
-#     }
+#     },
+#     performance="very slow"
 # )
 
 global_registry.register(
@@ -582,7 +609,8 @@ global_registry.register(
             "options": [True, False],
             "description": "是否使用各向同性 TV 降噪。True 通常能更好地处理自然图像的圆滑边缘，False 则倾向于生成横平竖直的块状边缘。默认 True。"
         }
-    }
+    },
+    performance="very slow"
 )
 
 global_registry.register(
@@ -600,7 +628,8 @@ global_registry.register(
             "range": [2.0, 20.0],
             "description": "增益系数。决定了对比度增强的剧烈程度，值越高，中间调对比度越强。默认 10.0。"
         }
-    }
+    },
+    performance="slow"
 )
 
 global_registry.register(
@@ -618,7 +647,8 @@ global_registry.register(
             "options": [3, 5, 7, 9, 11],
             "description": "模糊核大小(必须为奇数)。假设图像最初受到多大范围的模糊，值越大去模糊范围越广。默认 5。"
         }
-    }
+    },
+    performance="slowest"
 )
 
 # global_registry.register(
@@ -631,7 +661,8 @@ global_registry.register(
 #             "options": [3, 5, 7, 9, 11, 13, 15],
 #             "description": "模糊核大小(必须为奇数)。用于估测图像本身的模糊半径。值越大修复的模糊越严重，但也可能带来光晕效应。默认 5。"
 #         }
-#     }
+#     },
+#     performance="slowest"
 # )
 
 global_registry.load_custom_tools()
