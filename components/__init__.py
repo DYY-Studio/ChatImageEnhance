@@ -4,23 +4,17 @@ import numpy as np
 import inspect
 import re
 import ast
+import logging
 
+from tools import global_registry
 from components.image_comparison import image_comparison
 from utils import get_encoded_img, get_thumbnail_img, get_thumbnail_size, get_executable_dir
 
-# 导入工具模块（用于动态提取函数源码）
-try:
-    import tools.cv_wrappers as cv_wrappers_module
-    import tools.skimage_wrappers as skimage_wrappers_module
-except ImportError as e:
-    # 如果导入失败，设置为 None，后续使用时会跳过
-    cv_wrappers_module = None
-    skimage_wrappers_module = None
-    print(f"Warning: Failed to import tool wrappers: {e}")
+from typing import Literal, Callable
 
-from typing import Literal
+logger = logging.getLogger("BaseComponents")
 
-def _extract_wrapper_source(wrapper_module, func_name: str) -> str:
+def _extract_wrapper_source(func: Callable) -> str:
     """
     从工具模块或类中提取指定函数的源代码，并格式化为静态方法
     
@@ -33,7 +27,6 @@ def _extract_wrapper_source(wrapper_module, func_name: str) -> str:
     """
     try:
         # 获取函数对象（支持模块和类两种情况）
-        func = getattr(wrapper_module, func_name, None)
         if func is None:
             return ""
         
@@ -65,7 +58,7 @@ def _extract_wrapper_source(wrapper_module, func_name: str) -> str:
             return '\n'.join(cleaned_lines)
         return source
     except Exception as e:
-        print(f"Warning: Failed to extract source for {func_name}: {e}")
+        print(f"Warning: Failed to extract source for {func.__name__}: {e}")
         return ""
 
 def get_thumbnail_img_wrapper(
@@ -176,7 +169,10 @@ def render_message_content(msg, index: int):
 
             process_code = msg.get("process_code", "")
             best_params = msg.get("best_params", {})
-            if process_code and best_params:
+
+            if not process_code or not best_params:
+                st.button("📦 导出为处理脚本", disabled=True, help="需要生成处理代码和最优参数才能导出")
+            else:
                 # 移除 Markdown 
                 cleaned_code = re.sub(r'^```python\n|```$', '', process_code, flags=re.MULTILINE).strip()
                 
@@ -215,112 +211,52 @@ def render_message_content(msg, index: int):
                 
                 # 匹配所有 trial.suggest_* 调用，包括其所有参数
                 final_func_code = re.sub(r'trial\.suggest_[a-zA-Z_]+\(["\']([a-zA-Z0-9_]+)["\'][^)]*\)', replace_trial_suggest, final_func_code)
-            
-                # 3.2 检测并提取实际使用的自定义工具函数
-                # 建立注册表名称到实际函数名的映射（根据 tools/__init__.py 中的注册信息）
-                registry_to_actual = {
-                    # cv_wrappers 映射
-                    'Bilateral_Filter': ('cv_wrappers', 'safe_denoise_bilateral'),
-                    'CLAHE_Enhancement': ('cv_wrappers', 'safe_enhance_clahe'),
-                    'Gamma_Correction': ('cv_wrappers', 'safe_gamma_correction'),
-                    'Unsharp_Masking': ('cv_wrappers', 'safe_unsharp_masking'),
-                    'Laplacian_Sharpening': ('cv_wrappers', 'safe_laplacian_sharpening'),
-                    'Kernel_Sharpening': ('cv_wrappers', 'safe_kernel_sharpening'),
-                    'Auto_Canny': ('cv_wrappers', 'safe_auto_canny'),
-                    'Gaussian_Blur': ('cv_wrappers', 'safe_gaussian_blur'),
-                    'Morphology_Cleanup': ('cv_wrappers', 'safe_morphology_transform'),
-                    'Adaptive_Binarization': ('cv_wrappers', 'safe_adaptive_threshold'),
-                    'Median_Denoise': ('cv_wrappers', 'safe_median_blur'),
-                    'Auto_White_Balance': ('cv_wrappers', 'safe_color_balance'),
-                    'Guided_Filter': ('cv_wrappers', 'safe_guided_filter'),
-                    'Image_Deringing': ('cv_wrappers', 'safe_deringing'),
-                    'Saturation_Boost_Nonlinear': ('cv_wrappers', 'safe_hsv_saturation_nonlinear'),
-                    'Vibrance': ('cv_wrappers', 'safe_vibrance'),
-                    'Color_Temperature_Tune': ('cv_wrappers', 'safe_color_temperature'),
-                    'Global_Hue_Shift': ('cv_wrappers', 'safe_hue_shift'),
-                    'NL_Means_Denoising': ('cv_wrappers', 'safe_nl_means_denoise'),
-                    'Sauvola_Binarization': ('cv_wrappers', 'safe_enhance_sauvola'),
-                    
-                    # skimage_wrappers 映射（如果有）
-                    # 可以根据需要添加更多映射
-                }
                 
-                # 从 LLM 生成的代码中提取所有 cv_wrappers.xxx 或 skimage_wrappers.xxx 调用
                 used_functions = {}
-                
-                # 匹配所有 cv_wrappers.func_name(...) 或 skimage_wrappers.func_name(...) 调用
-                matches = re.findall(r'(?:cv_wrappers|skimage_wrappers)\.(\w+)\s*\(', final_func_code)
+                matches = re.findall(r'(?:cv_wrappers)\.(\w+)\s*\(', final_func_code)
                 
                 # 调试信息
                 if matches:
-                    print(f"[DEBUG] 检测到的函数调用: {set(matches)}")
-                    print(f"[DEBUG] cv_wrappers 模块状态: {'已加载' if cv_wrappers_module is not None else '未加载'}")
-                    print(f"[DEBUG] skimage_wrappers 模块状态: {'已加载' if skimage_wrappers_module is not None else '未加载'}")
+                    logger.info(f"检测到的函数调用: {set(matches)}")
                 else:
-                    print(f"[DEBUG] 未检测到任何 cv_wrappers/skimage_wrappers 调用")
+                    logger.info(f"未检测到任何 cv_wrappers/skimage_wrappers 调用")
                 
                 for called_func_name in set(matches):  # 去重
-                    print(f"[DEBUG] 正在处理函数: {called_func_name}")
+                    logger.info(f"正在处理函数: {called_func_name}")
                     
                     # 尝试通过注册表映射查找实际函数
-                    if called_func_name in registry_to_actual:
-                        module_name, actual_name = registry_to_actual[called_func_name]
-                        print(f"[DEBUG]   -> 映射找到: {called_func_name} -> {module_name}.{actual_name}")
+                    if called_func_name in global_registry.tools:
+                        func: Callable = global_registry.tools[called_func_name]['func']
+                        actual_name = func.__name__
+                        logger.info(f"-> 映射找到: {called_func_name} -> {func.__name__}")
                         
                         # 根据模块名获取对应的模块对象
-                        if module_name == 'cv_wrappers' and cv_wrappers_module is not None:
-                            source = _extract_wrapper_source(cv_wrappers_module, actual_name)
-                            print(f"[DEBUG]   -> 从 cv_wrappers 提取源码: {'成功' if source else '失败'}")
-                        elif module_name == 'skimage_wrappers' and skimage_wrappers_module is not None:
-                            source = _extract_wrapper_source(skimage_wrappers_module, actual_name)
-                            print(f"[DEBUG]   -> 从 skimage_wrappers 提取源码: {'成功' if source else '失败'}")
-                        else:
-                            source = None
-                            print(f"[DEBUG]   -> 模块不可用: module_name={module_name}, cv_wrappers={'None' if cv_wrappers_module is None else 'OK'}, skimage_wrappers={'None' if skimage_wrappers_module is None else 'OK'}")
+                        source = _extract_wrapper_source(func)
+                        logger.info(f"-> 提取源码: {'成功' if source else '失败'}")
                         
                         if source:
                             # 关键修复：将函数名替换为 LLM 使用的注册表名称
                             # 例如：将 "def safe_enhance_clahe(...)" 替换为 "def CLAHE_Enhancement(...)"
                             source = re.sub(rf'def\s+{actual_name}\s*\(', f'def {called_func_name}(', source)
                             used_functions[called_func_name] = source
-                            print(f"[DEBUG]   -> ✅ 成功添加到 used_functions")
+                            logger.info(f"-> ✅ 成功添加到 used_functions")
                         else:
-                            print(f"[DEBUG]   -> ❌ 源码提取失败，跳过")
+                            logger.info(f"-> ❌ 源码提取失败，跳过")
                     else:
-                        print(f"[DEBUG]   -> 不在注册表映射中，尝试直接匹配")
-                        # 如果不在映射表中，尝试直接匹配实际函数名（处理特殊情况）
-                        if cv_wrappers_module is not None and hasattr(cv_wrappers_module, called_func_name):
-                            source = _extract_wrapper_source(cv_wrappers_module, called_func_name)
-                            if source:
-                                used_functions[called_func_name] = source
-                                print(f"[DEBUG]   -> ✅ 从 cv_wrappers 直接匹配成功")
-                        elif skimage_wrappers_module is not None and hasattr(skimage_wrappers_module, called_func_name):
-                            source = _extract_wrapper_source(skimage_wrappers_module, called_func_name)
-                            if source:
-                                used_functions[called_func_name] = source
-                                print(f"[DEBUG]   -> ✅ 从 skimage_wrappers 直接匹配成功")
-                        else:
-                            print(f"[DEBUG]   -> ❌ 直接匹配也失败")
+                        logger.info(f"-> 不在注册表映射中")
                 
-                print(f"[DEBUG] 最终 used_functions 包含的函数: {list(used_functions.keys())}")
+                logger.info(f"最终 used_functions 包含的函数: {list(used_functions.keys())}")
                 
                 # 构建只包含已使用函数的工具类
                 wrapper_class_code = ""
                 if used_functions:
                     wrapper_methods = '\n\n'.join(used_functions.values())
                     wrapper_class_code = f"""
-# ===================== 内联自定义工具封装（仅包含实际使用的函数）=====================
 class cv_wrappers:
 {wrapper_methods}
 
-# ============================================================================================
 """
 
-                # 通用：移除 from tools. 开头的导入
-                final_func_code = re.sub(r'^from tools\..*?\n', '', final_func_code, flags=re.MULTILINE)
-                final_func_code = re.sub(r'^import tools\..*?\n', '', final_func_code, flags=re.MULTILINE)
-
-                # 4. 构建独立脚本内容
                 script_content = f"""# -*- coding: utf-8 -*-
 # Auto-generated Image Enhancement Script
 # Generated by ChatImageEnhance
@@ -328,6 +264,8 @@ class cv_wrappers:
 
 import cv2
 import numpy as np
+import skimage
+import scipy
 import os
 import argparse
 import sys
@@ -398,7 +336,7 @@ if __name__ == "__main__":
     else:
         batch_process(args.input_dir, args.output_dir)  
 """
-                
+
                 st.download_button(
                     label="📦 导出为处理脚本",
                     data=script_content,
@@ -406,8 +344,6 @@ if __name__ == "__main__":
                     mime="text/x-python",
                     key=f"export_script_{id(msg)}_{index}"
                 )
-            else:
-                st.button("📦 导出为处理脚本", disabled=True, help="需要生成处理代码和最优参数才能导出")
 
         prev_image = get_previous_img(index, ignore_test_mode=False)
 
