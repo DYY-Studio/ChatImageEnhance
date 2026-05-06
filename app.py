@@ -95,7 +95,7 @@ with st.sidebar:
             options = model_options,
             index = 0,
             key="selected_model",
-            disabled=len(st.session_state.models) == 0
+            disabled=st.session_state.models is None or len(st.session_state.models) == 0
         )
 
         is_visual_model = st.toggle("该模型支持视觉输入", key="is_visual_model")
