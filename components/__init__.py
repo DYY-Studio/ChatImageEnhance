@@ -1,11 +1,72 @@
 import streamlit as st
 import yaml
 import numpy as np
+import inspect
+import re
+import ast
 
 from components.image_comparison import image_comparison
 from utils import get_encoded_img, get_thumbnail_img, get_thumbnail_size, get_executable_dir
 
+# 导入工具模块（用于动态提取函数源码）
+try:
+    import tools.cv_wrappers as cv_wrappers_module
+    import tools.skimage_wrappers as skimage_wrappers_module
+except ImportError as e:
+    # 如果导入失败，设置为 None，后续使用时会跳过
+    cv_wrappers_module = None
+    skimage_wrappers_module = None
+    print(f"Warning: Failed to import tool wrappers: {e}")
+
 from typing import Literal
+
+def _extract_wrapper_source(wrapper_module, func_name: str) -> str:
+    """
+    从工具模块或类中提取指定函数的源代码，并格式化为静态方法
+    
+    Args:
+        wrapper_module: 工具模块或类（如 cv_wrappers 模块）
+        func_name: 函数名
+    
+    Returns:
+        格式化后的静态方法源代码字符串
+    """
+    try:
+        # 获取函数对象（支持模块和类两种情况）
+        func = getattr(wrapper_module, func_name, None)
+        if func is None:
+            return ""
+        
+        # 使用 inspect 获取源代码
+        source = inspect.getsource(func)
+        
+        # 清理缩进并转换为静态方法格式
+        lines = source.split('\n')
+        if lines:
+            # 找到最小非空行的缩进
+            min_indent = min(len(line) - len(line.lstrip()) for line in lines if line.strip())
+            
+            # 处理第一行（函数定义行），添加 @staticmethod 装饰器
+            cleaned_lines = ['    @staticmethod']
+            
+            for i, line in enumerate(lines):
+                if line.strip():
+                    # 移除原有缩进并添加标准缩进（4空格）
+                    cleaned_line = '    ' + line[min_indent:]
+                    
+                    # 如果是第一行且是 def 开头，保持原样（已经添加了装饰器）
+                    if i == 0 and line.strip().startswith('def'):
+                        cleaned_lines.append(cleaned_line)
+                    else:
+                        cleaned_lines.append(cleaned_line)
+                else:
+                    cleaned_lines.append('')
+            
+            return '\n'.join(cleaned_lines)
+        return source
+    except Exception as e:
+        print(f"Warning: Failed to extract source for {func_name}: {e}")
+        return ""
 
 def get_thumbnail_img_wrapper(
     raw_array: np.ndarray, 
@@ -113,16 +174,13 @@ def render_message_content(msg, index: int):
                 else:
                     st.button("🆕 保存新工具", on_click=save_tool, args=[msg['new_tool']])
 
-            # 新增：导出为处理脚本的按钮
             process_code = msg.get("process_code", "")
             best_params = msg.get("best_params", {})
             if process_code and best_params:
-                import re, ast
-
-                # 1. 清洗代码：移除 Markdown 标记和无关导入
+                # 移除 Markdown 
                 cleaned_code = re.sub(r'^```python\n|```$', '', process_code, flags=re.MULTILINE).strip()
                 
-                # 2. 提取并标准化 process 函数
+                # 提取并标准化 process 函数
                 try:
                     tree = ast.parse(cleaned_code)
                     func_node = None
@@ -141,110 +199,128 @@ def render_message_content(msg, index: int):
                         min_indent = min(len(line) - len(line.lstrip()) for line in lines if line.strip())
                         normalized_lines = [line[min_indent:] if len(line) > min_indent else line for line in lines]
                         
-                        # 重新组合函数定义（确保正确的函数签名）
+                        # 重新组合函数定义
                         final_func_code = "def process(img, params):\n" + "\n".join(["    " + line for line in normalized_lines])
                     else:
                         final_func_code = cleaned_code
                 except Exception:
                     final_func_code = cleaned_code
 
-                # 3. 后处理：清理和优化生成的代码
-                # 3.1 移除 Optuna 相关代码
+                #移除 Optuna 
                 final_func_code = re.sub(r'\s*trial\s*=\s*.*?\n', '\n', final_func_code)  # 移除 trial 定义
                 
-                # 更精确地替换 trial.suggest_* 调用为 params 字典访问
                 def replace_trial_suggest(match):
                     param_name = match.group(1)
                     return f'params["{param_name}"]'
                 
                 # 匹配所有 trial.suggest_* 调用，包括其所有参数
                 final_func_code = re.sub(r'trial\.suggest_[a-zA-Z_]+\(["\']([a-zA-Z0-9_]+)["\'][^)]*\)', replace_trial_suggest, final_func_code)
+            
+                # 3.2 检测并提取实际使用的自定义工具函数
+                # 建立注册表名称到实际函数名的映射（根据 tools/__init__.py 中的注册信息）
+                registry_to_actual = {
+                    # cv_wrappers 映射
+                    'Bilateral_Filter': ('cv_wrappers', 'safe_denoise_bilateral'),
+                    'CLAHE_Enhancement': ('cv_wrappers', 'safe_enhance_clahe'),
+                    'Gamma_Correction': ('cv_wrappers', 'safe_gamma_correction'),
+                    'Unsharp_Masking': ('cv_wrappers', 'safe_unsharp_masking'),
+                    'Laplacian_Sharpening': ('cv_wrappers', 'safe_laplacian_sharpening'),
+                    'Kernel_Sharpening': ('cv_wrappers', 'safe_kernel_sharpening'),
+                    'Auto_Canny': ('cv_wrappers', 'safe_auto_canny'),
+                    'Gaussian_Blur': ('cv_wrappers', 'safe_gaussian_blur'),
+                    'Morphology_Cleanup': ('cv_wrappers', 'safe_morphology_transform'),
+                    'Adaptive_Binarization': ('cv_wrappers', 'safe_adaptive_threshold'),
+                    'Median_Denoise': ('cv_wrappers', 'safe_median_blur'),
+                    'Auto_White_Balance': ('cv_wrappers', 'safe_color_balance'),
+                    'Guided_Filter': ('cv_wrappers', 'safe_guided_filter'),
+                    'Image_Deringing': ('cv_wrappers', 'safe_deringing'),
+                    'Saturation_Boost_Nonlinear': ('cv_wrappers', 'safe_hsv_saturation_nonlinear'),
+                    'Vibrance': ('cv_wrappers', 'safe_vibrance'),
+                    'Color_Temperature_Tune': ('cv_wrappers', 'safe_color_temperature'),
+                    'Global_Hue_Shift': ('cv_wrappers', 'safe_hue_shift'),
+                    'NL_Means_Denoising': ('cv_wrappers', 'safe_nl_means_denoise'),
+                    'Sauvola_Binarization': ('cv_wrappers', 'safe_enhance_sauvola'),
+                    
+                    # skimage_wrappers 映射（如果有）
+                    # 可以根据需要添加更多映射
+                }
                 
-                # 3.2 检测是否使用了自定义工具封装（cv_wrappers/skimage_wrappers）
-                uses_custom_wrappers = bool(re.search(r'(cv_wrappers|skimage_wrappers)\.', final_func_code))
+                # 从 LLM 生成的代码中提取所有 cv_wrappers.xxx 或 skimage_wrappers.xxx 调用
+                used_functions = {}
                 
+                # 匹配所有 cv_wrappers.func_name(...) 或 skimage_wrappers.func_name(...) 调用
+                matches = re.findall(r'(?:cv_wrappers|skimage_wrappers)\.(\w+)\s*\(', final_func_code)
+                
+                # 调试信息
+                if matches:
+                    print(f"[DEBUG] 检测到的函数调用: {set(matches)}")
+                    print(f"[DEBUG] cv_wrappers 模块状态: {'已加载' if cv_wrappers_module is not None else '未加载'}")
+                    print(f"[DEBUG] skimage_wrappers 模块状态: {'已加载' if skimage_wrappers_module is not None else '未加载'}")
+                else:
+                    print(f"[DEBUG] 未检测到任何 cv_wrappers/skimage_wrappers 调用")
+                
+                for called_func_name in set(matches):  # 去重
+                    print(f"[DEBUG] 正在处理函数: {called_func_name}")
+                    
+                    # 尝试通过注册表映射查找实际函数
+                    if called_func_name in registry_to_actual:
+                        module_name, actual_name = registry_to_actual[called_func_name]
+                        print(f"[DEBUG]   -> 映射找到: {called_func_name} -> {module_name}.{actual_name}")
+                        
+                        # 根据模块名获取对应的模块对象
+                        if module_name == 'cv_wrappers' and cv_wrappers_module is not None:
+                            source = _extract_wrapper_source(cv_wrappers_module, actual_name)
+                            print(f"[DEBUG]   -> 从 cv_wrappers 提取源码: {'成功' if source else '失败'}")
+                        elif module_name == 'skimage_wrappers' and skimage_wrappers_module is not None:
+                            source = _extract_wrapper_source(skimage_wrappers_module, actual_name)
+                            print(f"[DEBUG]   -> 从 skimage_wrappers 提取源码: {'成功' if source else '失败'}")
+                        else:
+                            source = None
+                            print(f"[DEBUG]   -> 模块不可用: module_name={module_name}, cv_wrappers={'None' if cv_wrappers_module is None else 'OK'}, skimage_wrappers={'None' if skimage_wrappers_module is None else 'OK'}")
+                        
+                        if source:
+                            # 关键修复：将函数名替换为 LLM 使用的注册表名称
+                            # 例如：将 "def safe_enhance_clahe(...)" 替换为 "def CLAHE_Enhancement(...)"
+                            source = re.sub(rf'def\s+{actual_name}\s*\(', f'def {called_func_name}(', source)
+                            used_functions[called_func_name] = source
+                            print(f"[DEBUG]   -> ✅ 成功添加到 used_functions")
+                        else:
+                            print(f"[DEBUG]   -> ❌ 源码提取失败，跳过")
+                    else:
+                        print(f"[DEBUG]   -> 不在注册表映射中，尝试直接匹配")
+                        # 如果不在映射表中，尝试直接匹配实际函数名（处理特殊情况）
+                        if cv_wrappers_module is not None and hasattr(cv_wrappers_module, called_func_name):
+                            source = _extract_wrapper_source(cv_wrappers_module, called_func_name)
+                            if source:
+                                used_functions[called_func_name] = source
+                                print(f"[DEBUG]   -> ✅ 从 cv_wrappers 直接匹配成功")
+                        elif skimage_wrappers_module is not None and hasattr(skimage_wrappers_module, called_func_name):
+                            source = _extract_wrapper_source(skimage_wrappers_module, called_func_name)
+                            if source:
+                                used_functions[called_func_name] = source
+                                print(f"[DEBUG]   -> ✅ 从 skimage_wrappers 直接匹配成功")
+                        else:
+                            print(f"[DEBUG]   -> ❌ 直接匹配也失败")
+                
+                print(f"[DEBUG] 最终 used_functions 包含的函数: {list(used_functions.keys())}")
+                
+                # 构建只包含已使用函数的工具类
+                wrapper_class_code = ""
+                if used_functions:
+                    wrapper_methods = '\n\n'.join(used_functions.values())
+                    wrapper_class_code = f"""
+# ===================== 内联自定义工具封装（仅包含实际使用的函数）=====================
+class cv_wrappers:
+{wrapper_methods}
+
+# ============================================================================================
+"""
+
                 # 通用：移除 from tools. 开头的导入
                 final_func_code = re.sub(r'^from tools\..*?\n', '', final_func_code, flags=re.MULTILINE)
                 final_func_code = re.sub(r'^import tools\..*?\n', '', final_func_code, flags=re.MULTILINE)
 
                 # 4. 构建独立脚本内容
-                # 如果使用了自定义工具，则内联工具类定义
-                wrapper_class_code = ""
-                if uses_custom_wrappers:
-                    wrapper_class_code = """
-# ===================== 内联自定义工具封装（从项目 tools 模块提取）=====================
-class cv_wrappers:
-    @staticmethod
-    def Vibrance(img, level=1.0):
-        \"\"\"自然饱和度调整：level 0=完全去饱和，1=原图\"\"\"
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
-        h, s, v = cv2.split(hsv)
-        
-        # 智能饱和度增强（保护高饱和区域）
-        max_s = np.max(s)
-        s = s + (max_s - s) * (1 - level)
-        s = np.clip(s, 0, 255)
-        
-        hsv = cv2.merge([h, s, v])
-        return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
-
-    @staticmethod
-    def Unsharp_Masking(img, amount=1.0, threshold=0):
-        \"\"\"USM 锐化：amount 强度，threshold 阈值\"\"\"
-        blurred = cv2.GaussianBlur(img, (0, 0), 1.0)
-        return cv2.addWeighted(img, 1 + amount, blurred, -amount, 0)
-
-    @staticmethod
-    def safe_gaussian_blur(img, ksize=1):
-        \"\"\"高斯模糊：自动处理 ksize 为奇数\"\"\"
-        ksize = int(ksize)
-        if ksize % 2 == 0:
-            ksize += 1
-        if ksize < 1:
-            ksize = 1
-        if ksize == 1:
-            return img.copy()
-        return cv2.GaussianBlur(img, (ksize, ksize), 0)
-
-    @staticmethod
-    def safe_denoise_bilateral(img, d=5, sigma_color=10.0, sigma_space=10.0):
-        \"\"\"双边滤波降噪：在 Lab 空间进行处理\"\"\"
-        d = max(1, int(d))
-        working_img = img.copy()
-        
-        if working_img.dtype != np.uint8:
-            if working_img.max() <= 1.01:
-                working_img = (working_img * 255).astype(np.uint8)
-            else:
-                working_img = np.clip(working_img, 0, 255).astype(np.uint8)
-        
-        if len(working_img.shape) == 3:
-            if working_img.shape[2] == 4:
-                working_img = cv2.cvtColor(working_img, cv2.COLOR_BGRA2BGR)
-            lab = cv2.cvtColor(working_img, cv2.COLOR_BGR2Lab)
-            denoised_lab = cv2.bilateralFilter(lab, d, sigma_color, sigma_space)
-            return cv2.cvtColor(denoised_lab, cv2.COLOR_Lab2BGR)
-        else:
-            return cv2.bilateralFilter(working_img, d, sigma_color, sigma_space)
-
-    @staticmethod
-    def safe_enhance_clahe(img, clip_limit=1.0, tile_grid_size=4):
-        \"\"\"自适应直方图均衡：在 LAB 空间处理亮度\"\"\"
-        grid = int(tile_grid_size)
-        clahe = cv2.createCLAHE(clipLimit=float(clip_limit), tileGridSize=(grid, grid))
-        
-        if len(img.shape) == 2:
-            return clahe.apply(img)
-        else:
-            lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-            l, a, b = cv2.split(lab)
-            l_enhanced = clahe.apply(l)
-            enhanced_lab = cv2.merge((l_enhanced, a, b))
-            return cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
-
-# ============================================================================================
-"""
-
                 script_content = f"""# -*- coding: utf-8 -*-
 # Auto-generated Image Enhancement Script
 # Generated by ChatImageEnhance
