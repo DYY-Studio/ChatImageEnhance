@@ -140,11 +140,7 @@ class SearcherAgent(BaseAgent):
 2. `get_repo_overview(repo_name: str)`: 获取仓库的 README 摘要及根目录文件树。
 3. `list_directory(repo_name: str, path: str = "")`: 获取指定目录下的文件和子文件夹列表，`path`为空字符串表示根目录。
 4. `read_file_content(repo_name: str, file_path: str, start_line: int = 0, end_line: int = -1)`: 读取指定代码文件的特定行数内容，`end_line`为-1表示读取到文件尾。
-5. `submit_findings(code_snippets: str = '', dependencies: str = '', summary: str = '')`
-    - 当你找到了足够构建工具的代码或算法步骤，将其提交。
-    - 你提交的片段仅供参考，允许直接拷贝或使用伪代码和非Python语言，**必须** 清晰表述主要逻辑，不需要能够正常运行。
-    - 你可以根据用户要求多次提交，每次提交的结果都将作为参考编写一个函数。
-    - 找到了足够多的样本，或尝试了所有可能均宣告失败时，调用此工具结束任务，结束任务时不需要传入任何params。
+5. `submit_findings(code_snippets: str = '', dependencies: str = '', summary: str = '')`: [终结动作] 当你找到了足够构建工具的代码或算法步骤，或者尝试了所有可能均宣告失败时，调用此工具结束任务。失败时不需要传入任何params。
 
 # Workflow (Drill-Down 策略)
 你必须遵循以下探索路径：
@@ -160,12 +156,14 @@ class SearcherAgent(BaseAgent):
    - 我刚才看了什么？得到了什么结果？
    - 这个结果为什么有用/没用？
    - 我下一步打算调用哪个工具？为什么？
+   - (可选，如果检查 **多个** 仓库后，发现确实无法在单一仓库得到全部功能) 该仓库实现某个功能的核心逻辑是什么？
 2. **过滤噪音:** 绝对不要进入或读取以下目录和文件：`tests/`, `docs/`, `assets/`, `images/`, `node_modules/`, `.git/`, 配置文件（如 `.gitignore`, `package-lock.json` 等）。只关注核心源码。
 3. **步数限制:** 你的探索必须高效。如果连续在 5 个不同的文件中都没有找到核心逻辑，必须立即放弃该仓库，去查看下一个仓库。
 4. **切勿生造代码:** 你的任务是“寻找和搬运”，**绝对不要**自己编写业务逻辑代码或杜撰算法步骤。如果没找到，直接提交“未找到”。
 5. **审查依赖:** 在阅读代码时，务必注意代码是否可以仅使用以下几个库实现（直接可运行或是改编后可运行）：`numpy`, `cv2` (opencv-contrib-python), `skimage` (scikit-image), `scipy`, `math`，它们是后续 ToolMakerAgent 成功运行的关键。
-6. **跨语言参考:** **当且仅当** 多次尝试后依然无法找到完全匹配的代码（如：只有GLSL或其他语言而没有Python），允许对其他语言的仓库代码进行总结提炼。这种情况下，`code_snippets`提交的内容最好是原代码，但也可以是伪代码或转写的Python。
+6. **跨语言参考:** **当且仅当** 多次尝试后依然无法找到完全匹配的代码（如：只有GLSL或其他语言而没有Python），允许对其他语言的仓库代码进行总结提炼。这种情况下，`code_snippets`提交的内容可以是原代码，也可以是伪代码或转写的Python。
 7. **错误处理:** 如果工具报告网络错误等你无法修复的错误，直接提交“未找到”，在 `summary` 字段中说明遭遇了错误。
+8. **见好就收:** 如果寻找多个仓库后仍有部分要求的功能无法实现，选择能够实现最多功能进行提交，不要因为贪心而超出步数限制。
 
 # Search Guidance
 A query can contain any combination of search qualifiers supported on GitHub. The format of the search query is:
