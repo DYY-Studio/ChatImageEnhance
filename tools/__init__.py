@@ -597,7 +597,7 @@ if importlib.util.find_spec("pywt"):
 global_registry.register(
     name="Total_Variation_Denoising_Bregman",
     func=safe_tv_denoise_bregman,
-    description="基于 Split-Bregman 优化的全变分降噪算子。处理速度极快，适合大分辨率图像。能有效去除噪点并保持边缘锐利，产生类似'卡通化'的平滑效果，适合处理平滑区域多但需要锐利边缘的图像。",
+    description="基于 Split-Bregman 优化的全变分降噪算子。能有效去除噪点并保持边缘锐利，产生类似'卡通化'的平滑效果，适合处理平滑区域多但需要锐利边缘的图像。",
     params_schema={
         "weight": {
             "type": "float",

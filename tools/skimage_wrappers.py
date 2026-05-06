@@ -164,6 +164,8 @@ if importlib.util.find_spec('pywt'):
                 rescale_sigma=True, 
                 **kwargs
             )
+
+            denoised = np.clip(denoised, 0, 1)
             
             return util.img_as_ubyte(denoised)
         except Exception as e:
