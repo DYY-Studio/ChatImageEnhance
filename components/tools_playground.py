@@ -1,7 +1,7 @@
 import streamlit as st
+import time
 
 from streamlit.delta_generator import DeltaGenerator
-from datetime import datetime, UTC
 
 from tools import global_registry
 from utils import get_thumbnail_img_nocache, get_thumbnail_img, get_thumbnail_size
@@ -66,10 +66,10 @@ def render_playground(container: DeltaGenerator | None = None):
             with render_col:
                 if do_try:
                     try:
-                        start_time = datetime.now(UTC)
+                        start_time = time.perf_counter_ns()
                         applied_img = tool_info['func'](st.session_state['img_bgr'], **params_try)
-                        end_time = datetime.now(UTC)
-                        st.markdown(f":small[Process Time: {(end_time - start_time).total_seconds()} sec]", text_alignment="center")
+                        end_time = time.perf_counter_ns()
+                        st.markdown(f":small[Process Time: {(end_time - start_time) / 1_000_000:.4f} ms]", text_alignment="center")
                         image_comparison(
                             get_thumbnail_img(
                                 st.session_state['img_bgr'],
