@@ -20,9 +20,10 @@ def render_playground(container: DeltaGenerator | None = None):
             with st.container(border=True, height="stretch"):
                 st.subheader("信息")
                 st.markdown(schema['description'])
-                with st.container(border=True):
-                    st.checkbox("内置算子", value=not tool_info.get('is_dynamic', False), disabled=True)
-                    st.toggle("启用", value=not tool_info.get('is_disabled', False))
+                if 'cost' in schema:
+                    st.markdown(f"运算速度: **{schema['cost'].upper()}**")
+                st.markdown(f"内置算子: **{'否' if tool_info.get('is_dynamic', False) else '是'}**")
+                st.toggle("启用", value=not tool_info.get('is_disabled', False))
 
         params = schema['parameters']
         param_names = list(params.keys())
