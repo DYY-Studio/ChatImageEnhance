@@ -2,8 +2,8 @@ from agents.searcher import SearcherAgent
 
 from github import Auth, Github
 from typing import Generator, Literal
-from datetime import datetime, UTC
 
+import time
 import logging
 import time
 import json
@@ -52,7 +52,7 @@ class Searcher:
         times: int = 0
         while content is None or 'tool' not in content or content['tool'] != 'submit_findings':
             times += 1
-            start_time = datetime.now(UTC)
+            start_time = time.perf_counter()
             for t, chunk in self.searcher.execute_stream(thinks, tool_result):
                 if t == "STREAM.REASONING":
                     yield f"SEARCH.REASONING.{times}", chunk
@@ -90,7 +90,7 @@ class Searcher:
                 }
             logger.info(tool_result.strip('\n'))
 
-            if (duration := (datetime.now(UTC) - start_time).total_seconds()) < interval:
+            if (duration := (time.perf_counter() - start_time)) < interval:
                 time.sleep(interval - duration)
 
         yield 'SEARCH.FINISH', content['params'] if content and 'params' in content else None
