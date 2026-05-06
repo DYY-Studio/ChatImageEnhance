@@ -3,6 +3,8 @@ from tools import global_registry
 from typing import Generator, Literal
 
 import logging
+import re
+import json
 
 logger = logging.getLogger("CoderAgent")
 
@@ -100,7 +102,7 @@ class CoderAgent(BaseAgent):
 #### 格式 A：输出处理代码 (情况 A)
 你必须直接返回代码块，不要包含冗长的解释。代码结构应如下：
 
-```python
+``python
 def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
     # 1. 参数采样 (基于 Schema 范围)
     # 2. 图像处理流程
@@ -156,138 +158,61 @@ def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
     "tool_name": "safe_crt_scanline_effect",
     "description": "需要一个算子来模拟CRT电视效果。增加水平方向的黑色扫描线；产生微小的RGB通道错位(色差)。"
 }}
-```
-        """
-        return prompt.strip()
+```"""
+        return prompt
 
-    def _extract_code_block(self, llm_response: str) -> str:
-        """
-        从LLM回复中提取纯Python代码块（剥离Markdown格式和多余解释）
-        
-        :param llm_response: LLM原始回复文本
-        :return: 纯Python代码字符串（仅process函数）
-        :raises RuntimeError: 无法从回复中提取合法代码块时抛出异常
-        """
-        # 正则匹配```python ... ```代码块
-        
-        return self._extract_code(llm_response, "process")
-    
-    def generate_prompt(self, 
-        user_intent: str = '', 
-        init_details: str = '', 
-        previous_errors: str = None,
-    ) -> str:
-        user_prompt = ''
-        if user_intent:
-            user_prompt += f"{user_intent}"
-        if init_details:
-            user_prompt += f"原始图像量化信息：{init_details}\n"
-        if previous_errors:
-            user_prompt += f"上一轮代码执行错误信息：{previous_errors}\n请优先修复该错误再生成代码\n"
-        logger.info(f"注入提示词：\n{user_prompt}")
-        return user_prompt
-
-    def generate_code_stream(self, 
-        user_intent: str = '', 
-        init_details: str = '', 
-        previous_errors: str = None,
-    ) -> Generator[tuple[str, str], None, None]:
-        """
-        核心方法：根据用户意图生成/修复带Optuna trial的图像增强代码
-        
-        :param user_intent: 用户的图像增强需求（如"提升低光照图像的对比度和清晰度"）
-        :param plan_steps: 规划步骤（预留参数，目前暂未使用）
-        :param previous_errors: 上一轮代码执行的错误信息（用于修复代码）
-        
-        :return STREAM.REASONING: 流式返回思考内容
-        :return STREAM.CONENT: 流式返回正文内容
-        :return FINISH: 返回清理后的代码
-        """
-        # 调用LLM生成代码（继承BaseAgent的带重试机制的LLM调用）
-        logger.info("开始调用LLM生成图像增强代码")
-        llm_response = ''
-        for t, chunk in self._call_llm_stream(self.generate_prompt(
-            user_intent, init_details, previous_errors
-        )):
-            yield f'STREAM.{t}', chunk
-            if t == "CONTENT":
-                llm_response += chunk
-        
-        # 提取并清洗代码块
+    def execute_stream(self, user_prompt: str, evaluate_code_str: str = "", error_log: str = ""):
         try:
-            code = self._extract_code_block(llm_response)
-            logger.info(f"成功生成代码：\n{code}")
-            yield 'FINISH', code
-        except:
+            response = self._call_llm(user_prompt)
+            
+            # 1. 检查是否为工具请求 (JSON)
+            clean_response = re.sub(r'^```json\n|```$', '', response.strip(), flags=re.MULTILINE).strip()
             try:
-                res_json = self._extract_json(llm_response)
-                logger.info(f"要求生成工具：\n{res_json}")
-                yield 'FINISH', res_json
-            except:
-                raise RuntimeError("LLM 回复既不包含合法的 JSON 工具请求，也未包含合法的 process 函数代码块")
+                tool_request = json.loads(clean_response)
+                if isinstance(tool_request, dict) and tool_request.get("status") == "NEED_NEW_TOOL":
+                    yield "TOOL_REQUEST", tool_request
+                    return
+            except json.JSONDecodeError:
+                pass
 
-    def generate_code(self, 
-        user_intent: str = '', 
-        plan_steps: list = [], 
-        previous_errors: str = None,
-    ) -> str:
-        """
-        核心方法：根据用户意图生成/修复带Optuna trial的图像增强代码
-        
-        :param user_intent: 用户的图像增强需求（如"提升低光照图像的对比度和清晰度"）
-        :param plan_steps: 规划步骤（预留参数，目前暂未使用）
-        :param previous_errors: 上一轮代码执行的错误信息（用于修复代码）
-        :return: 可执行的Python代码字符串（含process函数）
-        """
-        
-        # 调用LLM生成代码（继承BaseAgent的带重试机制的LLM调用）
-        logger.info("开始调用LLM生成图像增强代码")
-        llm_response = self._call_llm(self.generate_prompt(
-            user_intent, plan_steps, previous_errors
-        ))
-        
-        # 提取并清洗代码块
-        try:
-            code = self._extract_code_block(llm_response)
-            logger.info(f"成功生成代码：\n{code}")
-            return code
-        except:
-            try:
-                res_json = self._extract_json(llm_response)
-                logger.info(f"要求生成工具：\n{res_json}")
-                return res_json
-            except:
-                raise RuntimeError("LLM 回复既不包含合法的 JSON 工具请求，也未包含合法的 process 函数代码块")
+            # 2. 清洗代码
+            clean_code = self._clean_generated_code(response)
+            
+            # 3. 校验结构 (针对 process 函数)
+            if not self._validate_function_structure(clean_code):
+                raise RuntimeError("生成的处理函数缺少必要结构或格式不正确")
+            
+            yield ("FINISH", clean_code)
+        except Exception as e:
+            logger.error(f"CoderAgent execution failed: {str(e)}")
+            yield ("ERROR", str(e))
+            raise
 
-    def execute(self, user_intent: str = '', init_details: str = '', previous_errors: str = None) -> str | dict:
-        """
-        实现父类BaseAgent的抽象execute方法，作为Agent对外的统一执行入口
+    def _clean_generated_code(self, raw_code: str) -> str:
+        """执行LLM生成代码的标准化清洗"""
+        import re, ast
+        # 1. 移除Markdown代码块标记
+        cleaned = re.sub(r'^```python\n|```$', '', raw_code, flags=re.MULTILINE).strip()
         
-        :param user_intent: 用户的图像增强意图
-        :param init_details: 初始化基础量化信息
-        :param previous_errors: 历史执行错误信息（用于代码修复）
-        :return: 最终生成的可执行Python代码字符串
-        """
-        try:
-            return self.generate_code(user_intent, init_details, previous_errors)
-        except Exception as e:
-            logger.error(f"CoderAgent执行失败：{str(e)}", exc_info=True)
-            raise RuntimeError(f"编码Agent生成代码失败：{str(e)}") from e
+        # 2. 标准化缩进（确保4空格基准缩进）
+        lines = [line.rstrip() for line in cleaned.splitlines()]
+        if lines and lines[0].startswith(' ' * 4):
+            lines = [line[4:] if line.startswith(' ' * 4) else line for line in lines]
         
-    def execute_stream(
-        self, 
-        user_intent: str = '', 
-        init_details: str = '', 
-        previous_errors: str = None
-    ) -> Generator[tuple[str, str | dict], None, None]:
-        """
-        :return STREAM.REASONING: 流式返回思考内容
-        :return STREAM.CONENT: 流式返回正文内容
-        :return FINISH: 返回清理后的代码
-        """
+        # 3. 预校验语法
         try:
-            for t, chunk in self.generate_code_stream(user_intent, init_details, previous_errors):
-                yield t, chunk
-        except Exception as e:
-            logger.error(f"CoderAgent执行失败：{str(e)}", exc_info=True)
-            raise RuntimeError(f"编码Agent生成代码失败：{str(e)}") from e
+            ast.parse('\n'.join(lines))
+        except SyntaxError as e:
+            logger.warning(f"Syntax error in generated code: {str(e)}")
+            # 尝试自动修复缺失的换行符
+            if 'unexpected EOF' in str(e):
+                lines.append('')
+        return '\n'.join(lines)
+
+    def _validate_function_structure(self, code: str) -> bool:
+        """验证处理函数结构完整性"""
+        import re
+        # 必须包含def process(
+        if 'def process(' not in code:
+            return False
+        return True
