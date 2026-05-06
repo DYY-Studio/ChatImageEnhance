@@ -114,7 +114,7 @@ class BaseAgent:
                     model=self.model_name,
                     messages=self._generate_messages(user_prompt, imgs),
                     temperature=self.temperature,
-                    reasoning_effort=self.reasoning_effort
+                    reasoning_effort=self.reasoning_effort,
                     **self.kwargs
                     # response_format={ "type": "json_object" } # 如果模型支持强制 JSON 模式，可以开启
                 )
