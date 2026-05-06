@@ -2,6 +2,11 @@ import streamlit as st
 import yaml
 import numpy as np
 
+import optuna
+import plotly.graph_objects as go
+import plotly.io as pio
+from optuna.visualization import plot_param_importances, plot_optimization_history
+
 from components.image_comparison import image_comparison
 from utils import get_encoded_img, get_thumbnail_img, get_thumbnail_size, get_executable_dir
 
@@ -53,7 +58,7 @@ def delete_message(idx: int, target_only: bool = False):
     if clear_encoded_cache:
         get_encoded_img.clear()
 
-def render_message_content(msg, index: int):
+def render_message_content(msg: dict, index: int):
     """提取内部渲染逻辑，供历史记录与最新消息复用"""
     st.markdown(msg["content"])
     if "image" not in msg:
@@ -69,6 +74,45 @@ def render_message_content(msg, index: int):
             
             with st.expander("Optuna 最优参数组合"):
                 st.json(msg.get("best_params", {}))
+
+                        # ========== 新增：超参数可视化部分（基于 JSON 存储） ==========
+            with st.expander("超参数优化可视化"):
+                has_importance = msg.get("fig_importance_json")
+                has_history = msg.get("fig_history_json")
+            
+                if not has_importance and not has_history:
+                    st.info("暂无超参数优化图表数据（可能优化轮数不足2次或旧版本消息）")
+                else:
+                    col1, col2 = st.columns(2)
+                    
+                    if has_importance:
+                        with col1:
+                            try:
+                                st.subheader("超参数重要性")
+                                fig = pio.from_json(msg["fig_importance_json"])
+                                fig.update_layout(
+                                    height=350,
+                                    margin=dict(l=10, r=10, t=20, b=10),
+                                    font=dict(size=9)
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+                            except Exception as e:
+                                st.warning(f"超参数重要性图加载失败: {str(e)}")
+                    
+                    if has_history:
+                        with col2:
+                            try:
+                                st.subheader("优化历史")
+                                fig = pio.from_json(msg["fig_history_json"])
+                                fig.update_layout(
+                                    height=350,
+                                    margin=dict(l=10, r=10, t=20, b=10),
+                                    font=dict(size=9)
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+                            except Exception as e:
+                                st.warning(f"优化历史图加载失败: {str(e)}")
+            # ========== 原有基于 study 的绘图代码已移除 ==========
 
         with st.container(horizontal=True):
             if st.button("🚮 删除本轮对话", on_click=delete_message, args=[index], key=f"del_btn_{id(msg)}_{index}"):
