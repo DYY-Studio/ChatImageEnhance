@@ -46,7 +46,7 @@ class Orchestrator:
 
     def toolmaker_stream(self, tool_request: str, search_result: dict | None = None) -> Generator[tuple[
         Literal[
-            "CODE_TOOL.START", "CODE_TOOL.END", "CODE_TOOL.STREAM", 
+            "CODE_TOOL.START", "CODE_TOOL.END", "CODE_TOOL.STREAM", "CODE_TOOL.TEST",
             "CODE_TOOL.REASONING", "FINISH", "ERROR_RETRY"
         ], 
         str | dict | None
