@@ -27,7 +27,7 @@ class BayesianOptimizer:
         """
         针对固定的代码拓扑，运行 Optuna 寻找最优参数。
 
-        返回（暂定）: {'best_score': float, 'best_params': dict, 'best_img': np.ndarray}
+        返回: {'best_score': float, 'best_params': dict, 'best_img': np.ndarray, 'n_trials_used': int}
         """
         def objective(trial):
             try:
@@ -46,19 +46,26 @@ class BayesianOptimizer:
         study = optuna.create_study(direction="maximize")
         study.optimize(objective, n_trials=n_trials, callbacks=callbacks)
         
+        # ===== [新增] 记录实际使用的trial数 =====
+        n_trials_used = len(study.trials)
+        
         try:
             return {
                 "best_score": study.best_value,
                 "best_params": study.best_params,
                 "best_img": self.executor.execute_pipeline_direct(
-                    code_str, orig_img, self.study.best_params
-                )
+                    code_str, orig_img, study.best_params
+                ),
+                # ===== [新增] 返回实际使用的trial数 =====
+                "n_trials_used": n_trials_used
             }
         except:
             return {
                 "best_score": None,
                 "best_params": None,
-                "best_img": None
+                "best_img": None,
+                # ===== [新增] 即使出错也返回实际trial数 =====
+                "n_trials_used": n_trials_used
             }
 
     def run_inner_loop_stream(self, 
@@ -73,7 +80,7 @@ class BayesianOptimizer:
         """
         针对固定的代码拓扑，运行 Optuna 寻找最优参数。
 
-        返回（暂定）: {'best_score': float, 'best_params': dict, 'best_img': np.ndarray}
+        返回: {'best_score': float, 'best_params': dict, 'best_img': np.ndarray, 'n_trials_used': int}
         """
 
         logger.info(f"BASE: {base_img.shape[1]}x{base_img.shape[0]}")
@@ -103,17 +110,25 @@ class BayesianOptimizer:
 
         self.study.optimize(objective, n_trials=n_trials, callbacks=callbacks)
         
+        # ===== [新增] 记录实际使用的trial数并打印日志 =====
+        n_trials_used = len(self.study.trials)
+        logger.info(f"实际使用 trial 数: {n_trials_used} / {n_trials}")
+        
         try:
             return {
                 "best_score": self.study.best_value,
                 "best_params": self.study.best_params,
                 "best_img": self.executor.execute_pipeline_direct(
                     code_str, orig_img, self.study.best_params
-                )
+                ),
+                # ===== [新增] 返回实际使用的trial数 =====
+                "n_trials_used": n_trials_used
             }
         except:
             return {
                 "best_score": None,
                 "best_params": None,
-                "best_img": None
+                "best_img": None,
+                # ===== [新增] 即使出错也返回实际trial数 =====
+                "n_trials_used": n_trials_used
             }

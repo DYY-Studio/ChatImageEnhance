@@ -142,6 +142,34 @@ with st.sidebar:
     
     with st.expander("处理", expanded=True):
         n_trials = st.slider("优化轮数", 5, 150, 15)
+        
+        # ===== [新增] 自适应优化设置面板 =====
+        with st.expander("自适应优化设置", expanded=False):
+            enable_early_stop = st.toggle(
+                "启用自适应早停",
+                value=True,
+                help="当优化结果收敛时自动提前终止，节省时间"
+            )
+            patience = st.slider(
+                "收敛耐心值",
+                5, 30, 10,
+                help="连续多少个trial没有显著改进时触发早停",
+                disabled=not enable_early_stop
+            )
+            min_trials = st.slider(
+                "最少优化轮数",
+                3, 20, 5,
+                help="至少执行多少轮后才允许早停",
+                disabled=not enable_early_stop
+            )
+            improvement_threshold = st.slider(
+                "改进阈值",
+                0.001, 0.1, 0.01, 0.001,
+                help="相对改进小于此值视为无显著改进",
+                disabled=not enable_early_stop,
+                format="%.3f"
+            )
+        
         step_by_step = st.toggle(
             "基于上一轮图像而非原图",
             help="不勾选时每次处理均在原图上进行，勾选后则对上一轮结果进行"
@@ -304,19 +332,27 @@ if user_feedback:
 
             best_queue = Queue()
             prev_img_bgr = get_previous_img(len(st.session_state.messages))
+            # ===== [修改] 创建回调时传入自适应早停参数 =====
             callback = StOptunaCallbackImg(
                 n_trials, 
                 progress_bar, status_text, table_placeholder, 
                 best_img, best_queue,
                 prev_img_bgr if prev_img_bgr is not None else img_bgr, 
                 prev_img_bgr is None, 
-                preview_img_max_side, preview_img_scale
+                preview_img_max_side, preview_img_scale,
+                # ===== [新增] 自适应早停参数 =====
+                enable_early_stop=enable_early_stop,
+                patience=patience,
+                min_trials=min_trials,
+                improvement_threshold=improvement_threshold
             )
 
             best_bgr, best_params, log = None, None, None
             evaluate_code_str = ''
             process_code_str = ''
             new_tool: dict | None = None
+            # ===== [新增] 记录实际使用的trial数 =====
+            actual_n_trials = n_trials
 
             evaluate_handler = StStreamResHandler(eva_status, eva_thinking_container)
 
@@ -372,7 +408,8 @@ if user_feedback:
                         optuna_status.update(state="running")
                     elif t == "FINISH":
                         optuna_status.update(state="complete")
-                        best_bgr, best_params, log = body
+                        # ===== [修改] 解包返回值，获取实际trial数 =====
+                        best_bgr, best_params, log, actual_n_trials = body
 
                         coding_finish = True
                     
@@ -428,16 +465,27 @@ if user_feedback:
             st.error("此轮运行失败，请尝试重新输入或更改要求。")
             st.stop()
         else:
-            main_status.update(label="本轮调整结束", state="complete")
+            # ===== [新增] 根据实际trial数显示不同消息 =====
+            if actual_n_trials < n_trials:
+                main_status.update(
+                    label=f"本轮调整结束（实际运行 {actual_n_trials}/{n_trials} 轮，已提前收敛）", 
+                    state="complete"
+                )
+            else:
+                main_status.update(label="本轮调整结束", state="complete")
+            
             st.session_state['best_bgr'] = best_bgr
 
             new_msg = {
                 "role": "assistant",
-                "content": "已完成本轮调优。请查看图像，如果需要进一步调整（如：增加亮度、减少对比度），请直接告诉我。",
+                # ===== [修改] 显示实际运行的trial数 =====
+                "content": f"已完成本轮调优（实际运行 {actual_n_trials} 轮）。请查看图像，如果需要进一步调整（如：增加亮度、减少对比度），请直接告诉我。",
                 "image": best_bgr,
                 "eval_code": evaluate_code_str,
                 "process_code": process_code_str,
                 "best_params": best_params,
+                # ===== [新增] 保存实际trial数到消息历史 =====
+                "n_trials_used": actual_n_trials,
             }
             if new_tool: new_msg["new_tool"] = new_tool
             st.session_state.messages.append(new_msg)
