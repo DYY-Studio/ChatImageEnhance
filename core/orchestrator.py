@@ -46,7 +46,7 @@ class Orchestrator:
 
     def toolmaker_stream(self, tool_request: str, search_result: dict | None = None) -> Generator[tuple[
         Literal[
-            "CODE_TOOL.START", "CODE_TOOL.END", "CODE_TOOL.STREAM", 
+            "CODE_TOOL.START", "CODE_TOOL.END", "CODE_TOOL.STREAM", "CODE_TOOL.TEST",
             "CODE_TOOL.REASONING", "FINISH", "ERROR_RETRY"
         ], 
         str | dict | None
@@ -81,6 +81,7 @@ class Orchestrator:
                     yield "CODE_TOOL.REASONING", chunk
 
             try:
+                yield "CODE_TOOL.TEST", None
                 e = self.executor.test_generated_tools(code_str, schema['name'], schema)
                 if e is None:
                     yield "FINISH", {

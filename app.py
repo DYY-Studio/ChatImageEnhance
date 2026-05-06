@@ -439,6 +439,7 @@ if user_feedback:
                         with tool_status:
                             with (toolmaker_status := st.status("⌨️ 编写工具", state="error")):
                                 toolmaker_container = st.container(border=False)
+                                toolmaker_placeholder = st.empty()
 
                     toolmaker_handler = StStreamResHandler(toolmaker_status, toolmaker_container)
                         
@@ -448,7 +449,12 @@ if user_feedback:
                             toolmaker_handler.thinking_end()
                         elif t == "CODE_TOOL.REASONING":
                             toolmaker_handler.thinking_chunk(body)
+                        elif t == "CODE_TOOL.TEST":
+                            with toolmaker_placeholder:
+                                st.info("正在测试算子性能, 请稍等...")
                         elif t == "CODE_TOOL.END":
+                            with toolmaker_placeholder:
+                                st.info("完成！")
                             toolmaker_handler.content_end()
                         elif t == "ERROR_RETRY":
                             with main_container:

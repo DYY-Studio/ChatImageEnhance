@@ -2,6 +2,7 @@ import streamlit as st
 import yaml
 import numpy as np
 
+from tools import global_registry
 from components.image_comparison import image_comparison
 from utils import get_encoded_img, get_thumbnail_img, get_thumbnail_size, get_executable_dir
 
@@ -106,11 +107,15 @@ def render_message_content(msg, index: int):
                         f"{imports_text}\n\n{tool_code}", encoding='utf-8'
                     )
 
-                file_name = get_executable_dir() / f"tools/custom/{msg['new_tool']['schema']['name']}"
+                tool_name = msg['new_tool']['schema']['name']
+                file_name = get_executable_dir() / f"tools/custom/{tool_name}"
 
                 if file_name.with_suffix(".yaml").exists() and file_name.with_suffix(".py").exists():
                     st.button("🆕 保存新工具", disabled=True)
+                    if tool_name not in global_registry.tools:
+                        global_registry.load_custom_tool(tool_name)
                 else:
+                    global_registry.dynamic_unregister(tool_name)
                     st.button("🆕 保存新工具", on_click=save_tool, args=[msg['new_tool']])
 
         prev_image = get_previous_img(index, ignore_test_mode=False)
