@@ -20,6 +20,8 @@ from components.image_analyze import image_analyze
 from components.tools_playground import render_playground
 from components import get_thumbnail_img_wrapper, render_message_content, get_previous_img, generate_user_prompt
 
+from optuna.visualization import plot_param_importances, plot_optimization_history
+
 from utils import *
 from constants import *
 
@@ -298,9 +300,16 @@ if user_feedback:
             with (optuna_status := st.status("🔬 Optuna 重新调优", state="error")):
                 status_text = st.empty()
                 progress_bar = st.progress(0)
-                preview_tab, data_tab = st.tabs(["实时图像预览", "调优记录"])
+                preview_tab, viz_tab, data_tab = st.tabs(["实时图像预览", "可视化", "调优记录"])
                 with preview_tab: best_img = st.empty()
                 with data_tab: table_placeholder = st.empty()
+                # 新增：创建可视化占位符
+                with viz_tab:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        importance_placeholder = st.empty()
+                    with col2:
+                        history_placeholder = st.empty()
 
             best_queue = Queue()
             prev_img_bgr = get_previous_img(len(st.session_state.messages))
@@ -310,7 +319,10 @@ if user_feedback:
                 best_img, best_queue,
                 prev_img_bgr if prev_img_bgr is not None else img_bgr, 
                 prev_img_bgr is None, 
-                preview_img_max_side, preview_img_scale
+                preview_img_max_side, preview_img_scale,
+                # 新增可视化占位符参数
+                importance_placeholder=importance_placeholder,
+                history_placeholder=history_placeholder
             )
 
             best_bgr, best_params, log = None, None, None
@@ -393,6 +405,15 @@ if user_feedback:
                                             searcher, tool_request, search_container, search_steps_limit, search_interval
                                         )
                         break
+
+                # 从 best_queue 中读取所有条目，提取图表 JSON
+                importance_json = None
+                history_json = None
+                while not best_queue.empty():
+                    item = best_queue.get()
+                    if isinstance(item, tuple) and len(item) == 3 and item[0] == 'CHARTS':
+                        _, importance_json, history_json = item
+                        break
                 
                 if tool_request:
                     with main_container:
@@ -430,6 +451,7 @@ if user_feedback:
         else:
             main_status.update(label="本轮调整结束", state="complete")
             st.session_state['best_bgr'] = best_bgr
+        
 
             new_msg = {
                 "role": "assistant",
@@ -438,6 +460,8 @@ if user_feedback:
                 "eval_code": evaluate_code_str,
                 "process_code": process_code_str,
                 "best_params": best_params,
+                "fig_importance_json": importance_json,   # 超参数重要性图
+                "fig_history_json": history_json       # 优化历史图
             }
             if new_tool: new_msg["new_tool"] = new_tool
             st.session_state.messages.append(new_msg)
