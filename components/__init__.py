@@ -123,7 +123,14 @@ def render_message_content(msg, index: int):
         with st.container(border=False):
             comp_target = "原图"
             if prev_image is not None:
-                comp_target = st.pills("对比对象", ["原图", "上一轮"], default="原图", required=True)
+                # ===== [修改] 添加唯一的 key 以避免 ID 冲突 =====
+                comp_target = st.pills(
+                    "对比对象", 
+                    ["原图", "上一轮"], 
+                    default="原图", 
+                    required=True,
+                    key=f"comp_target_{index}"  # 使用消息索引作为唯一标识
+                )
 
             image_comparison(
                 get_thumbnail_img_wrapper(st.session_state['img_bgr'], 'b64') if comp_target == "原图" else get_thumbnail_img_wrapper(prev_image, 'b64'),
