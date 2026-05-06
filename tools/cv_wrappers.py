@@ -881,22 +881,31 @@ if __name__ == "__main__":
     # 测试所有CV算子能否正常运作，是否在特定格式图像上会出现问题
 
     # 测试用随机灰度图像
-    gray_img = np.random.randint(0, 256, (480, 640), dtype=np.uint8)
+    # gray_img = np.random.randint(0, 256, (480, 640), dtype=np.uint8)
 
     # 测试用随机彩色图像
-    color_img = np.random.randint(0, 256, (100, 100, 3), dtype=np.uint8)
+    color_img = np.random.randint(0, 256, (1920, 1080, 3), dtype=np.uint8)
 
     import inspect
     import sys
+    import time
 
     def run_all_func():
         current_module = sys.modules[__name__]
         functions_list = inspect.getmembers(current_module, inspect.isfunction)
         for name, func in functions_list:
             if name == "run_all_func": continue
-            if isinstance(ret := func(gray_img), str):
-                print("GRAY", ret)
-            if isinstance(ret := func(color_img), str):
-                print("COLOR", ret)
+            # if isinstance(ret := func(gray_img), str):
+            #     print("GRAY", ret)
+            try:
+                print(f"{name}", end="")
+                func(color_img)
+                start_time = time.perf_counter_ns()
+                for _ in range(20):
+                    func(color_img)
+                end_time = time.perf_counter_ns()
+                print(f",{(end_time - start_time) / 20 / 1_000_000 }")
+            except Exception as e:
+                print(str(e))
 
     run_all_func()

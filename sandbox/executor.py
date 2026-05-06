@@ -2,7 +2,7 @@ import optuna
 import numpy as np
 import ast
 import cv2
-import math
+import time
 import inspect
 import skimage
 import scipy
@@ -177,7 +177,38 @@ class SandboxExecutor:
             if not isinstance(result, np.ndarray):
                 raise ValueError("Tool retval is not np.ndarray")
             
-            global_registry.dynamic_register(tool_func, schema)
+            start_time = time.perf_counter_ns()
+            for _ in range(5):
+                global_registry.tools['Gaussian_Blur']['func'](test_img)
+            end_time = time.perf_counter_ns()
+            basic_cost = end_time - start_time
+
+            start_time = time.perf_counter_ns()
+            for _ in range(5):
+                tool_func(test_img)
+            end_time = time.perf_counter_ns()
+            target_cost = end_time - start_time
+
+            ratio = target_cost / basic_cost
+            performance = ""
+            if ratio < 2:
+                performance = "very fast"
+            elif ratio < 10:
+                performance = "faster"
+            elif ratio < 50:
+                performance = "fast"
+            elif ratio < 100:
+                performance = "medium"
+            elif ratio < 300:
+                performance = "slow"
+            elif ratio < 500:
+                performance = "slower"
+            elif ratio < 1000:
+                performance = "very slow"
+            else:
+                performance = "slowest"
+            
+            global_registry.dynamic_register(tool_func, schema, performance)
 
             return None
 

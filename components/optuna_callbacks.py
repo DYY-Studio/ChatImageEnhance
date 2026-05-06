@@ -15,22 +15,71 @@ class StOptunaCallback:
         progress_bar: DeltaGenerator, 
         status_text: DeltaGenerator, 
         table_placeholder: DeltaGenerator,
+        # ===== [新增] 自适应早停参数 =====
+        enable_early_stop: bool = True,        # 是否启用早停
+        patience: int = 10,                     # 容忍无改进的trial数
+        min_trials: int = 5,                    # 最少执行轮数
+        improvement_threshold: float = 0.01     # 显著改进阈值(1%)
     ):
         self.n_trials = n_trials
         self.progress_bar = progress_bar
         self.status_text = status_text
         self.table_placeholder = table_placeholder
+        
+        # ===== [新增] 保存自适应早停参数 =====
+        self.enable_early_stop = enable_early_stop
+        self.patience = patience
+        self.min_trials = min_trials
+        self.improvement_threshold = improvement_threshold
+        
+        # ===== [新增] 跟踪最佳值和改进历史 =====
+        self.best_values_history = []
+        self.no_improve_count = 0
+        self.actual_trials_used = 0
 
     def __call__(self, study: optuna.study.Study, trial: optuna.trial.FrozenTrial):
         # 计算进度
         current_trial = len(study.trials)
-        progress = current_trial / self.n_trials
+        
+        # ===== [新增] 记录实际使用的trial数 =====
+        self.actual_trials_used = current_trial
+        
+        # ===== [新增] 收敛检测逻辑 =====
+        try:
+            current_best = study.best_value
+            self.best_values_history.append(current_best)
+            
+            # 检查是否显著改进
+            if len(self.best_values_history) > 1:
+                prev_best = self.best_values_history[-2]
+                # 计算相对改进率
+                improvement = abs(current_best - prev_best) / (abs(prev_best) + 1e-8)
+                
+                if improvement < self.improvement_threshold:
+                    self.no_improve_count += 1
+                else:
+                    self.no_improve_count = 0  # 重置计数器
+        except:
+            pass
         
         # 更新进度条
+        progress = current_trial / self.n_trials
         self.progress_bar.progress(progress)
         try:
-            self.status_text.text(f"正在进行第 {current_trial}/{self.n_trials} 轮优化... "
-                                f"当前最佳值: {study.best_value:.4f}")
+            # ===== [修改] 显示早停相关信息 =====
+            status_msg = f"正在进行第 {current_trial}/{self.n_trials} 轮优化... " \
+                        f"当前最佳值: {study.best_value:.4f}"
+            
+            # 如果启用了早停且已达到最小trial数，显示收敛状态
+            if self.enable_early_stop and current_trial >= self.min_trials:
+                status_msg += f" | 无改进: {self.no_improve_count}/{self.patience}"
+                
+                # 检查是否触发早停
+                if self.no_improve_count >= self.patience:
+                    status_msg += " ⚡ 已收敛，提前终止"
+                    study.stop()  # 调用Optuna的停止方法
+            
+            self.status_text.text(status_msg)
         except:
             self.status_text.text(f"正在进行第 {current_trial}/{self.n_trials} 轮优化... ")
         
@@ -54,7 +103,12 @@ class StOptunaCallbackImg:
         previous_best_bgr: np.ndarray = None,
         compare_to_raw: bool = True,
         max_side: int = 800,
-        interpolate: int = cv2.INTER_AREA
+        interpolate: int = cv2.INTER_AREA,
+        # ===== [新增] 自适应早停参数 =====
+        enable_early_stop: bool = True,        # 是否启用早停
+        patience: int = 10,                     # 容忍无改进的trial数
+        min_trials: int = 5,                    # 最少执行轮数
+        improvement_threshold: float = 0.01     # 显著改进阈值(1%)
     ):
         self.n_trials = n_trials
         self.progress_bar = progress_bar
@@ -68,17 +122,62 @@ class StOptunaCallbackImg:
 
         self.max_side = max_side
         self.interpolate = interpolate
+        
+        # ===== [新增] 保存自适应早停参数 =====
+        self.enable_early_stop = enable_early_stop
+        self.patience = patience
+        self.min_trials = min_trials
+        self.improvement_threshold = improvement_threshold
+        
+        # ===== [新增] 跟踪最佳值和改进历史 =====
+        self.best_values_history = []
+        self.no_improve_count = 0
+        self.actual_trials_used = 0
 
     def __call__(self, study: optuna.study.Study, trial: optuna.trial.FrozenTrial):
         # 计算进度
         current_trial = len(study.trials)
-        progress = current_trial / self.n_trials
+        
+        # ===== [新增] 记录实际使用的trial数 =====
+        self.actual_trials_used = current_trial
+        
+        # ===== [新增] 收敛检测逻辑 =====
+        try:
+            current_best = study.best_value
+            self.best_values_history.append(current_best)
+            
+            # 检查是否显著改进
+            if len(self.best_values_history) > 1:
+                prev_best = self.best_values_history[-2]
+                # 计算相对改进率
+                improvement = abs(current_best - prev_best) / (abs(prev_best) + 1e-8)
+                
+                if improvement < self.improvement_threshold:
+                    self.no_improve_count += 1
+                else:
+                    self.no_improve_count = 0  # 重置计数器
+        except:
+            pass
         
         # 更新进度条
-        self.progress_bar.progress(progress)
+        progress = current_trial / self.n_trials
+        self.progress_bar.progress(min(progress, 1.0))
+        
+        # ===== [修改] 更新状态文本，显示早停信息 =====
         try:
-            self.status_text.text(f"正在进行第 {current_trial}/{self.n_trials} 轮优化... "
-                                f"当前最佳值: {study.best_value:.4f}")
+            status_msg = f"正在进行第 {current_trial}/{self.n_trials} 轮优化... " \
+                        f"当前最佳值: {study.best_value:.4f}"
+            
+            # 如果启用了早停且已达到最小trial数，显示收敛状态
+            if self.enable_early_stop and current_trial >= self.min_trials:
+                status_msg += f" | 无改进: {self.no_improve_count}/{self.patience}"
+                
+                # 检查是否触发早停
+                if self.no_improve_count >= self.patience:
+                    status_msg += " ⚡ 已收敛，提前终止"
+                    study.stop()  # 调用Optuna的停止方法
+            
+            self.status_text.text(status_msg)
         except:
             self.status_text.text(f"正在进行第 {current_trial}/{self.n_trials} 轮优化... ")
 

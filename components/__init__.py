@@ -160,11 +160,15 @@ def render_message_content(msg, index: int):
                         f"{imports_text}\n\n{tool_code}", encoding='utf-8'
                     )
 
-                file_name = get_executable_dir() / f"tools/custom/{msg['new_tool']['schema']['name']}"
+                tool_name = msg['new_tool']['schema']['name']
+                file_name = get_executable_dir() / f"tools/custom/{tool_name}"
 
                 if file_name.with_suffix(".yaml").exists() and file_name.with_suffix(".py").exists():
                     st.button("🆕 保存新工具", disabled=True)
+                    if tool_name not in global_registry.tools:
+                        global_registry.load_custom_tool(tool_name)
                 else:
+                    global_registry.dynamic_unregister(tool_name)
                     st.button("🆕 保存新工具", on_click=save_tool, args=[msg['new_tool']])
 
             process_code = msg.get("process_code", "")
@@ -350,7 +354,14 @@ if __name__ == "__main__":
         with st.container(border=False):
             comp_target = "原图"
             if prev_image is not None:
-                comp_target = st.pills("对比对象", ["原图", "上一轮"], default="原图", required=True)
+                # ===== [修改] 添加唯一的 key 以避免 ID 冲突 =====
+                comp_target = st.pills(
+                    "对比对象", 
+                    ["原图", "上一轮"], 
+                    default="原图", 
+                    required=True,
+                    key=f"comp_target_{index}"  # 使用消息索引作为唯一标识
+                )
 
             image_comparison(
                 get_thumbnail_img_wrapper(st.session_state['img_bgr'], 'b64') if comp_target == "原图" else get_thumbnail_img_wrapper(prev_image, 'b64'),

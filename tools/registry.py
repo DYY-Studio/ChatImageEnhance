@@ -5,7 +5,7 @@ import importlib.util
 import sys
 import logging
 
-from typing import Callable
+from typing import Callable, Literal
 from utils import get_executable_dir
 
 logger = logging.getLogger("ToolRegistry")
@@ -19,6 +19,25 @@ class ToolRegistry:
     def __init__(self):
         self._tools = {}
 
+    def load_custom_tool(self, name: str):
+        tool_py = get_executable_dir() / f"tools/custom/{name}.py"
+        tool_yaml = get_executable_dir() / f"tools/custom/{name}.yaml"
+        if not tool_py.exists() or not tool_yaml.exists():
+            return
+        
+        try:
+            schema = yaml.load(tool_yaml.read_text('utf-8'), yaml.FullLoader)
+            module = ToolRegistry._load_tool_from_file(
+                f"dynamic_tools_{schema['name']}", str(tool_py.absolute())
+            )
+            self.dynamic_register(
+                getattr(module, schema['name']),
+                schema
+            )
+            logger.info(f"Successfully load custom tool: {schema['name']}")
+        except Exception as e:
+            logger.info(f"Custom tool {name} dynamic load failed: {e}")
+
     def load_custom_tools(self):
         custom_tool_dir = get_executable_dir() / "tools/custom"
         if not custom_tool_dir.exists():
@@ -28,19 +47,7 @@ class ToolRegistry:
             if not file.is_file() or file.suffix.lower() != '.py':
                 continue
 
-            if (schema_file := file.with_suffix('.yaml')).exists():
-                try:
-                    schema = yaml.load(schema_file.read_text('utf-8'), yaml.FullLoader)
-                    module = ToolRegistry._load_tool_from_file(
-                        f"dynamic_tools_{schema['name']}", str(file.absolute())
-                    )
-                    self.dynamic_register(
-                        getattr(module, schema['name']),
-                        schema
-                    )
-                    logger.info(f"Successfully load custom tool: {schema['name']}")
-                except Exception as e:
-                    logger.info(f"Custom tool {file.with_suffix('').name} dynamic load failed: {e}")
+            self.load_custom_tool(file.with_suffix('').name)
 
 
     @staticmethod
@@ -75,13 +82,15 @@ class ToolRegistry:
             "schema": {
                 "name": name if name else func.__name__,
                 "description": doc,
-                "parameters": parameters_schema
+                "parameters": parameters_schema,
             }
         }
 
-    def dynamic_register(self, func: Callable, schema: dict):
+    def dynamic_register(self, func: Callable, schema: dict, performance: str = 'unknown'):
         """动态注册LLM生成的算子"""
         func_name = schema["name"]
+        if performance != 'unknown':
+            schema['cost'] = performance
         
         self._tools[func_name] = {
             "func": func,
@@ -97,7 +106,13 @@ class ToolRegistry:
         
         return None
 
-    def register(self, name: str, func: Callable, description: str, params_schema: dict):
+    def register(self, 
+        name: str, 
+        func: Callable, 
+        description: str, 
+        params_schema: dict,
+        performance: Literal['very fast', 'faster', 'fast', 'medium', 'slow', 'slower', 'very slow', 'slowest']
+    ):
         """
         注册一个 CV 函数及其参数范围
         
@@ -116,14 +131,16 @@ class ToolRegistry:
                 }
             }
             ```
+        :param performance: 描述函数的运行速度
         """
         self._tools[name] = {
             "func": func,  # 供本地 Python 真正执行的函数指针
             "schema": {    # 供大模型阅读的说明书
                 "name": name,
                 "description": description,
-                "parameters": params_schema
-            }
+                "parameters": params_schema,
+                "cost": performance
+            },
         }
 
     def get_all_schemas_for_llm(self) -> str:

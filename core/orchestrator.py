@@ -46,7 +46,7 @@ class Orchestrator:
 
     def toolmaker_stream(self, tool_request: str, search_result: dict | None = None) -> Generator[tuple[
         Literal[
-            "CODE_TOOL.START", "CODE_TOOL.END", "CODE_TOOL.STREAM", 
+            "CODE_TOOL.START", "CODE_TOOL.END", "CODE_TOOL.STREAM", "CODE_TOOL.TEST",
             "CODE_TOOL.REASONING", "FINISH", "ERROR_RETRY"
         ], 
         str | dict | None
@@ -81,6 +81,7 @@ class Orchestrator:
                     yield "CODE_TOOL.REASONING", chunk
 
             try:
+                yield "CODE_TOOL.TEST", None
                 e = self.executor.test_generated_tools(code_str, schema['name'], schema)
                 if e is None:
                     yield "FINISH", {
@@ -151,7 +152,8 @@ class Orchestrator:
             str | None
         ] | tuple[
             Literal['FINISH'],
-            tuple[np.ndarray, dict, str]
+            # ===== [修改] 返回值增加n_trials_used字段 =====
+            tuple[np.ndarray, dict, str, int]
         ] | tuple[
             Literal['TOOL_REQUEST'],
             dict
@@ -179,8 +181,8 @@ class Orchestrator:
         :param OPTUNA.END: Optuna调优结束
         :type OPTUNA.END: None
 
-        :param FINISH: 返回最终的结果
-        :type FINISH: tuple[np.ndarray, dict, str]
+        :param FINISH: 返回最终的结果 (best_img, best_params, log, n_trials_used)
+        :type FINISH: tuple[np.ndarray, dict, str, int]
         """
 
         if not hasattr(self, "evaluator"):
@@ -241,5 +243,7 @@ class Orchestrator:
         )
         yield 'OPTUNA.END', None
         
-        yield 'FINISH', (optimization_result['best_img'], optimization_result['best_params'], '')
+        # ===== [新增] 提取实际使用的trial数并返回 =====
+        n_trials_used = optimization_result.get('n_trials_used', n_trials)
+        yield 'FINISH', (optimization_result['best_img'], optimization_result['best_params'], '', n_trials_used)
     
