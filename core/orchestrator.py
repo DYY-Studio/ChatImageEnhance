@@ -81,6 +81,7 @@ class Orchestrator:
                     yield "CODE_TOOL.REASONING", chunk
 
             try:
+                yield "CODE_TOOL.TEST", None
                 e = self.executor.test_generated_tools(code_str, schema['name'], schema)
                 if e is None:
                     yield "FINISH", {
