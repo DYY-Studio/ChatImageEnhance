@@ -114,7 +114,7 @@ def render_message_content(msg, index: int):
         if st.button("🚮 删除本轮对话", on_click=delete_message, args=[index], key=f"del_btn_{id(msg)}_{index}"):
             st.rerun()
     else:
-        if any(msg.get(key) is not None for key in ['eval_code', 'process_code', 'best_params']):
+        if any(key in msg for key in ['eval_code', 'process_code', 'best_params']):
             with st.expander("🛠️ 查看此轮生成的代码与最优参数"):
                 with st.expander("评价逻辑 (Evaluation Code)"):
                     st.code(msg.get("eval_code", "# 无评价代码"), language="python")
