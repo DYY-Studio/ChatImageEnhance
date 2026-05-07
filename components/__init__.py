@@ -271,7 +271,7 @@ class cv_wrappers:
 
 import cv2
 import numpy as np
-import skimage
+from skimage import *
 import scipy
 import os
 import argparse
@@ -309,12 +309,16 @@ def batch_process(input_dir, output_dir):
     print(f"找到 {{len(files)}} 张图片，开始处理...")
     for i, filename in enumerate(files):
         img_path = os.path.join(input_dir, filename)
-        image = cv2.imread(img_path)
+        with open(img_path, mode='rb') as f:
+            file_bytes = np.asarray(bytearray(file.read()), dtype=np.uint8)
+        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         if image is not None:
             try:
                 enhanced = process(image, best_params)
                 output_path = os.path.join(output_dir, filename)
-                cv2.imwrite(output_path, enhanced)
+                succ, enc_img = cv2.imencode('.png', enhanced, [cv2.IMWRITE_PNG_COMPRESSION, 2])
+                with open(output_path, mode='wb') as f:
+                    f.write(enc_img.tobytes())
                 print(f"[{{i+1}}/{{len(files)}}] 已处理: {{filename}}")
             except Exception as e:
                 print(f"[{{i+1}}/{{len(files)}}] 处理失败 {{filename}}: {{str(e)}}")
