@@ -472,7 +472,12 @@ if user_feedback:
             st.stop()
         else:
             # ===== [新增] 根据实际trial数显示不同消息 =====
-            if actual_n_trials < n_trials:
+            if actual_n_trials == 0:
+                main_status.update(
+                    label=f"没有需要调优的参数", 
+                    state="complete"
+                )
+            elif actual_n_trials < n_trials:
                 main_status.update(
                     label=f"本轮调整结束（实际运行 {actual_n_trials}/{n_trials} 轮，已提前收敛）", 
                     state="complete"

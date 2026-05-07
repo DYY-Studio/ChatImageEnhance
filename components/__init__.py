@@ -114,15 +114,18 @@ def render_message_content(msg, index: int):
         if st.button("🚮 删除本轮对话", on_click=delete_message, args=[index], key=f"del_btn_{id(msg)}_{index}"):
             st.rerun()
     else:
-        with st.expander("🛠️ 查看此轮生成的代码与最优参数"):
-            with st.expander("评价逻辑 (Evaluation Code)"):
-                st.code(msg.get("eval_code", "# 无评价代码"), language="python")
-            
-            with st.expander("处理逻辑 (Process Code)"):
-                st.code(msg.get("process_code", "# 无处理代码"), language="python")
-            
-            with st.expander("Optuna 最优参数组合"):
-                st.json(msg.get("best_params", {}))
+        if any(msg.get(key) is not None for key in ['eval_code', 'process_code', 'best_params']):
+            with st.expander("🛠️ 查看此轮生成的代码与最优参数"):
+                with st.expander("评价逻辑 (Evaluation Code)"):
+                    st.code(msg.get("eval_code", "# 无评价代码"), language="python")
+                
+                with st.expander("处理逻辑 (Process Code)"):
+                    st.code(msg.get("process_code", "# 无处理代码"), language="python")
+                
+                with st.expander("Optuna 最优参数组合"):
+                    st.json(msg.get("best_params", {}))
+        else:
+            st.info(":information_source: 本轮处理没有任何可显示的信息")
 
         with st.container(horizontal=True):
             if st.button("🚮 删除本轮对话", on_click=delete_message, args=[index], key=f"del_btn_{id(msg)}_{index}"):

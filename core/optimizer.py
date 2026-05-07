@@ -1,6 +1,7 @@
 import optuna
 import numpy as np
 import logging
+import re
 
 from sandbox.executor import SandboxExecutor
 from typing import Iterable, Callable
@@ -15,6 +16,9 @@ class BayesianOptimizer:
     def __init__(self, executor: SandboxExecutor):
         self.executor = executor
         self.study = optuna.create_study(direction="maximize")
+
+    def _has_trial(self, code_str: str):
+        return re.search(r"\w+?\.suggest_(int|float|categorical|(?:discrete_|log)?uniform)", code_str) is not None
 
     def run_inner_loop(self, 
         code_str: str, 
@@ -43,7 +47,17 @@ class BayesianOptimizer:
                 logger.error("CODE EXEC ERROR", e)
                 raise optuna.TrialPruned() # 代码执行错误，修剪该 trial
 
-        study = optuna.create_study(direction="maximize")
+        if not self._has_trial(code_str):
+            return {
+                "best_score": None,
+                "best_params": None,
+                "best_img": self.executor.execute_pipeline_direct(
+                    code_str, orig_img, {}
+                ),
+                "n_trials_used": 0
+            }
+
+        study = self.study
         study.optimize(objective, n_trials=n_trials, callbacks=callbacks)
         
         # ===== [新增] 记录实际使用的trial数 =====
@@ -107,19 +121,31 @@ class BayesianOptimizer:
             except Exception as e:
                 logger.error("CODE EXEC ERROR", e)
                 raise optuna.TrialPruned()  # 代码执行错误，修剪该 trial
+            
+        # 如果代码中没有 trial 可搜索的内容，则只执行一遍就返回
+        if not self._has_trial(code_str):
+            return {
+                "best_score": None,
+                "best_params": None,
+                "best_img": self.executor.execute_pipeline_direct(
+                    code_str, orig_img, {}
+                ),
+                "n_trials_used": 0
+            }
 
-        self.study.optimize(objective, n_trials=n_trials, callbacks=callbacks)
+        study = self.study
+        study.optimize(objective, n_trials=n_trials, callbacks=callbacks)
         
         # ===== [新增] 记录实际使用的trial数并打印日志 =====
-        n_trials_used = len(self.study.trials)
+        n_trials_used = len(study.trials)
         logger.info(f"实际使用 trial 数: {n_trials_used} / {n_trials}")
         
         try:
             return {
-                "best_score": self.study.best_value,
-                "best_params": self.study.best_params,
+                "best_score": study.best_value,
+                "best_params": study.best_params,
                 "best_img": self.executor.execute_pipeline_direct(
-                    code_str, orig_img, self.study.best_params
+                    code_str, orig_img, study.best_params
                 ),
                 # ===== [新增] 返回实际使用的trial数 =====
                 "n_trials_used": n_trials_used
