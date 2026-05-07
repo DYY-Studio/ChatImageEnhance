@@ -67,10 +67,13 @@ class CoderAgent(BaseAgent):
 
 ### Code Constraints / 代码约束
 * **函数签名**：必须严格为 `def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:`。
-* **参数采样**：必须使用 `trial` 对象获取参数。如果一个参数完全没有调优的价值，必须使用常数来阻止Optuna调优。
-    * 例如：`d = trial.suggest_int("Bilateral_Filter_d", 1, 9)`
-    * 例如：`sigma_color = trial.suggest_float("Bilateral_Filter_sigma_color", 10.0, 150.0)`
-    * 例如：`ksize_median = trial.suggest_categorical("Median_Denoise_ksize", [3, 5, 7])`
+* **参数决策**：仔细研判用户需求，决定是否要对算子的特定参数进行调优。
+    - 情况 A (需要调优)：必须使用 `trial` 对象获取参数
+        - 例如：`d = trial.suggest_int("Bilateral_Filter_d", 1, 9)`
+        - 例如：`sigma_color = trial.suggest_float("Bilateral_Filter_sigma_color", 10.0, 40.0)`
+        - 例如：`ksize_median = trial.suggest_categorical("Median_Denoise_ksize", [3, 5, 7])`
+    - 情况 B (不需要)：必须使用 **常数** 设置参数
+        - 例如：`adjust_sigmoid_cutoff = 0.5`
 * **库访问**：你只能使用 `np` (numpy), `cv2` (opencv-contrib-python), `optuna`, `skimage` (scikit-image) 以及提供的算子库 `cv_wrappers`。
 * **算子调用**：所有算子必须通过 `cv_wrappers.算子名(img, **params)` 的形式调用。
 * **纯净性**：函数内不要包含 `import` 语句，不要定义全局变量。
