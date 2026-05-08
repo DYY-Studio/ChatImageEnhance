@@ -1,9 +1,25 @@
 import streamlit as st
 import cv2
 import numpy as np
+import os
+
+from utils import *
+from constants import *
+
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+os.environ["TORCH_HOME"] = str(get_executable_dir() / 'models/torch')
+os.environ["HF_HOME"] = str(get_executable_dir() / 'models/clip')
 
 from queue import Queue
 from streamlit_local_storage import LocalStorage
+
+from components.optuna_callbacks import StOptunaCallbackImg
+from components.tool_search import StSearch
+from components.llm_response_handler import StStreamResHandler
+from components.image_analyze import image_analyze
+from components.tools_playground import render_playground
+from components.debug_toolmaker import render_toolmaker
+from components import get_thumbnail_img_wrapper, render_message_content, get_previous_img, generate_user_prompt
 
 from core.orchestrator import Orchestrator
 from core.evaluator import Evaluator
@@ -12,16 +28,6 @@ from core.searcher import Searcher
 from agents.coder import CoderAgent
 from agents.evaluator import EvaluatorAgent
 from agents.toolmaker import ToolMakerAgent
-
-from components.optuna_callbacks import StOptunaCallbackImg
-from components.tool_search import StSearch
-from components.llm_response_handler import StStreamResHandler
-from components.image_analyze import image_analyze
-from components.tools_playground import render_playground
-from components import get_thumbnail_img_wrapper, render_message_content, get_previous_img, generate_user_prompt
-
-from utils import *
-from constants import *
 
 localS = LocalStorage()
 
@@ -65,14 +71,31 @@ def get_cv2_inter_mapping() -> dict[int, str]:
         if name.startswith('INTER_') and not any(x in name for x in ['MAX', 'TAB', 'BITS'])
     }
 
+@st.cache_resource
+def get_model_cache():
+    return dict()
+
 with st.sidebar:
     st.header("设置")
-    with st.expander("模式", expanded=True):
-        st.segmented_control(
-            "执行模式", ["Chat", "Playground"], 
+    with st.expander("基本", expanded=True):
+        st.pills(
+            "执行模式", ["Chat", "Playground", "ToolMaker"], 
             required=True, default="Chat", key='ui_scene',
             help="选择Playground以查看并试用所有可用的算子"
         )
+        enable_learning = st.toggle('启用深度学习')
+        if enable_learning:
+            with st.container(border=True):
+                if st.toggle("用于评价", help="约占用3GB内存", key='enable_learning_evaluator'):
+                    st.selectbox("评价模型运行设备", get_available_devices(), key='device_learning_evaluator')
+                if st.toggle("用于处理", key='enable_learning_process'):
+                    st.selectbox("处理模型运行设备", get_available_devices(), key='device_learning_process')
+        else:
+            st.session_state['enable_learning_evaluator'] = False
+            st.session_state['enable_learning_process'] = False
+            if st.button("释放预载入模型", help="释放预载入到内存的模型", width='stretch', disabled=len(get_model_cache()) == 0):
+                get_model_cache().clear()
+
     with st.expander("模型", expanded=True):
         api_url = st.text_input(
             "API URL (OpenAI 兼容端点)", 
@@ -131,13 +154,16 @@ with st.sidebar:
     with st.expander("代码检索", expanded=True):
         st.text("这是什么", help="缺少工具时，使用GitHub REST API检索相关的代码，需要填写Token才能使用")
         github_token = st.text_input("GitHub Token", type='password', key="github_token")
+        modelscope_token = st.text_input("ModelScope Token", type='password', key="modelscope_token")
         search_steps_limit = st.slider(
             "搜索步骤数限制", 10, 100, 30, step=1, disabled=not github_token,
-            help="限制最多 LLM 调用次数，防止难以找到时无限运行"
+            help="限制最多 LLM 调用次数，防止难以找到时无限运行",
+            key="search_steps_limit"
         )
         search_interval = st.slider(
             "强制步骤间隔 (秒)", 0.0, 60.0, 5.0, step=0.5, disabled=not github_token,
-            help="强行在两次请求之间插入间隔，防止请求过于频繁"
+            help="强行在两次请求之间插入间隔，防止请求过于频繁",
+            key="search_interval"
         )
     
     with st.expander("处理", expanded=True):
@@ -202,6 +228,10 @@ with st.sidebar:
             if github_token: localS.setItem("github_token", github_token, "locals_github_token")
             elif localS.getItem("github_token"): localS.deleteItem("github_token", "del_locals_github_token")
 
+if st.session_state.ui_scene == "ToolMaker":
+    render_toolmaker()
+    st.stop()
+
 upload = st.file_uploader("上传图像", ["png", "jpg", "jpeg"])
 
 if 'messages' not in st.session_state:
@@ -215,7 +245,7 @@ if 'ui_scene' not in st.session_state:
 
 @st.cache_resource
 def get_evaluator(raw_array: np.ndarray):
-    return Evaluator(raw_array)
+    return Evaluator(raw_array, get_model_cache())
 
 # 如果有历史结果，并在界面顶部展示原图与当前最佳进度的对比
 if upload:
@@ -223,8 +253,6 @@ if upload:
     st.session_state['img_bgr'] = img_bgr
     img_bgr_preview_bytes = get_thumbnail_img_wrapper(img_bgr, 'binary')
 
-    evaluator = get_evaluator(img_bgr)
-    st.session_state['evaluator'] = evaluator
     top_preview_placeholder = st.empty()
 
     st.subheader("原图")
@@ -233,6 +261,20 @@ if upload:
         caption=f"{img_bgr.shape[1]}x{img_bgr.shape[0]}, {img_bgr.shape[2]} Channel(s)"
     )
     st.divider()
+
+    if st.session_state.ui_scene == "Chat":
+        wait_init = st.empty()
+        with wait_init:
+            evaluator = get_evaluator(img_bgr)
+            st.session_state['evaluator'] = evaluator
+
+        if st.session_state['enable_learning_evaluator']:
+            with wait_init:
+                with st.spinner("正在载入模型，耗时较长，请耐心等待..."):
+                    evaluator.preload_models()
+        
+        with wait_init:
+            st.empty()
 else:
     st.session_state.messages.clear()
     st.session_state['best_bgr'] = None
@@ -312,8 +354,16 @@ if user_feedback:
 
         client = get_openai_client(st.session_state.api_url, st.session_state.api_key, st.session_state.proxy_url)
         orch = Orchestrator(
-            CoderAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort, low_res=low_res_process),
-            EvaluatorAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort),
+            CoderAgent(
+                client, selected_model, 
+                reasoning_effort=st.session_state.reasoning_effort, 
+                low_res=low_res_process
+            ),
+            EvaluatorAgent(
+                client, selected_model, 
+                reasoning_effort=st.session_state.reasoning_effort,
+                allow_learning=st.session_state.enable_learning_evaluator
+            ),
             ToolMakerAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort)
         )
 
@@ -425,7 +475,7 @@ if user_feedback:
                                 tool_status.update(state='running')
                                 if search_container:
                                     if github_token:
-                                        searcher = Searcher(github_token, client, selected_model)
+                                        searcher = Searcher(client, selected_model, github_token=github_token, modelscope_token=modelscope_token)
                                         search_result: dict = StSearch(
                                             searcher, tool_request, search_container, search_steps_limit, search_interval
                                         )
