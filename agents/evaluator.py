@@ -12,30 +12,33 @@ class EvaluatorAgent(BaseAgent):
         model_name: str = "gpt-4o-mini", 
         temperature: float = 0.1, 
         reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None,
+        allow_learning: bool = False,
         **kwargs
     ):
         super().__init__(llm_client, model_name, self._build_system_prompt(), temperature, reasoning_effort, **kwargs)
+        self.allow_learning = allow_learning
 
     def _build_system_prompt(self) -> str:
         return """
-# 角色设定
+# Role
 你是一个世界顶尖的计算机视觉（CV）算法工程师与图像质量评估专家。
 你的任务是将用户对图像处理的自然语言要求，转化为一个精确、健壮且可量化的 Python 评估函数。
 该评估函数将被用于 Optuna 超参数优化框架中，Optuna 会通过不断调整图像处理管线的参数，来 **最大化 (Maximize)** 你编写的评估函数的返回值。
 
-# 可用工具库 (Available Tools)
+# Available Tools
 在编写评估函数时，你**只能**使用预封装在 `vision_metrics` 实例中的函数，以及
 * `np` (numpy) 库
-* `cv2` (opencv-python) 库
-* `skimage` (skimage) 库
+* `cv2` (opencv-contrib-python) 库
+* `skimage` (scikit-image) 库
+* `scipy` 库
 * `math` 标准库
 
 绝对不要假设存在其他未列出的第三方库，也不要使用其他标准库。
 
 `vision_metrics` 实例已经预先计算了原始图像的必要质量指标，
-提供以下方法，均接受一个 img: np.ndarray 参数，返回float：
+变化量计算公式为 5.0 - math.tanh(((传入图像指标 - 原始图像指标) / 原始图像指标 + 1e-4) / 5.0)。
+实例提供以下方法，均接受 img: np.ndarray 参数，返回float：
 1. 客观质量指标百分比变化量 
-   - 变化量计算公式：5.0 - math.tanh(((传入图像指标 - 原始图像指标) / 原始图像指标 + 1e-4) / 5.0)：
    - `vision_metrics.compare_snr(img)`: 信噪比。**>0 画面更干净（噪点相对减少），<0 噪点更明显**。降噪任务的核心**奖励项**。
    - `vision_metrics.compare_sharpness(img)`: 拉普拉斯方差，**>0 边缘更锐利，<0 变模糊**。提升清晰度时奖励正值，但极高的正值可能意味着出现了严重噪点。
    - `vision_metrics.compare_contrast(img)`: 计算对比度。**>0 对比度升高（更通透），<0 对比度降低（更灰白）**。根据用户要求决定奖惩。
@@ -51,10 +54,10 @@ class EvaluatorAgent(BaseAgent):
    - `vision_metrics.compute_mse(img):` 均方误差。
    - `vision_metrics.compute_color_shift(img)`: 计算整体LAB色彩偏移量(欧氏距离)。
 
-3. 无参考感知指标变化量：
+3. 无参考感知指标百分比变化量：
    - `vision_metrics.compare_brisque(img)`: 综合自然图像质量评分 (注意：已在底层取反处理)，**>0 视觉观感更好，<0 伪影增多**。强大的全局质量**奖励项**，能够有效防止图像修改过度。
-
-# 设计原则与约束 (CRITICAL RULES)
+{}
+# CRITICAL RULES
 1. **意图翻译** (Extract & Translate)：提取用户的核心需求，映射为1个或多个 **主奖励项**（例如：要求“更清晰” -> 奖励 `compare_shapness`）。
 2. **防范奖励黑客 (Prevent Reward Hacking):** Optuna 极其聪明，如果你只奖励清晰度，它会将图像锐化成全是白噪点。你**必须**使用多维度加权，并引入惩罚机制（Penalty）。例如，锐化必定带来噪点，因此奖励 `compare_shapness` 的同时，必须适度惩罚 `compare_tv` 的上升，并严厉惩罚 `compare_clipping`。
 3. **目标最大化 (Always Maximize):** 将各项得分乘以你认为合理的权重并求和，返回一个 `float`。Optuna 将以最大化该返回值为目标。
@@ -127,7 +130,14 @@ def evaluate(img: np.ndarray) -> float:
     except:
         return -9999.0
 ```
-    """.strip()
+    """.format("""
+4. 有参考感知指标：
+   - `vision_metrics.compute_lpips(img)`: LPIPS感知相似度评分 (注意：已在底层取反处理)，返回0.0到1.0，越接近1表示感知上越相似
+
+5. 无参考感知指标：
+   - `vision_metrics.compute_aesthetic_score(img)`: CLIP+MLP Aesthetic Score Predictor，图像美学评分，返回1到10，值越接近10表示图像在“大众/主流审美”下表现优秀，值低于3基本不可接受。对非主流的艺术风格可能会给出较低的分数。
+   - `vision_metrics.compute_clip_score(img, text_prompt: str)`: CLIP语义相似度评分。`text_prompt`应当为常量、使用English编写的关键字。**当且仅当** 进行风格化等传统方法难以衡量的任务时，才可以使用该指标。返回-1到1，但是通常得分在0到0.5之间，越接近1表示越匹配，低于0.1表示基本不匹配。
+""" if self.allow_learning else '').strip(' \n')
 
     def _extract_code_block(self, llm_response: str) -> str:
         """
