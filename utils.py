@@ -6,9 +6,42 @@ import cv2
 import numpy as np 
 import base64
 import httpx
+import torch
 
 from openai import OpenAI, DefaultHttpxClient
 from typing import BinaryIO, Literal, Sequence
+
+@st.cache_resource
+def get_openai_client(base_url: str, api_key: str, proxy_url: str):
+    try:
+        if proxy_url:
+            try:
+                client = DefaultHttpxClient(
+                    transport=httpx.HTTPTransport(
+                        proxy=proxy_url
+                    )
+                )
+                return OpenAI(base_url=base_url, api_key="dummykey" if api_key is None or not api_key else api_key, max_retries=0, http_client=client, timeout=20.0)
+            except Exception as e:
+               print(e)
+        return OpenAI(base_url=base_url, api_key="dummykey" if api_key is None or not api_key else api_key, max_retries=0, timeout=20.0)
+    except Exception as e:
+        print(e)
+        return None
+
+@st.cache_resource
+def get_available_devices():
+    devices = []
+    if torch.cuda.is_available():
+        devices.append("cuda")
+    if torch.backends.mps.is_available():
+        devices.append("mps")
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        devices.append("xpu")
+    if hasattr(torch, "npu") and torch.npu.is_available():
+        devices.append("npu")
+    devices.append("cpu")
+    return devices
 
 def get_executable_dir():
     if hasattr(sys, 'frozen'):
@@ -96,24 +129,6 @@ def get_thumbnail_img_nocache(
             return None
     elif mode == "array":
         return resized_array
-    
-@st.cache_resource
-def get_openai_client(base_url: str, api_key: str, proxy_url: str):
-    try:
-        if proxy_url:
-            try:
-                client = DefaultHttpxClient(
-                    transport=httpx.HTTPTransport(
-                        proxy=proxy_url
-                    )
-                )
-                return OpenAI(base_url=base_url, api_key=api_key, max_retries=0, http_client=client, timeout=20.0)
-            except Exception as e:
-               print(e)
-        return OpenAI(base_url=base_url, api_key=api_key, max_retries=0, timeout=20.0)
-    except Exception as e:
-        print(e)
-        return None
 
 def clear_models():
     st.session_state.models = None
@@ -123,7 +138,11 @@ def get_models():
     if not st.session_state.api_url or (st.session_state.has_api_key and not st.session_state.api_key):
         return
     try:
-        models = get_openai_client(st.session_state.api_url, st.session_state.api_key, st.session_state.proxy_url).models.list()
+        models = get_openai_client(
+            st.session_state.api_url, 
+            st.session_state.api_key if st.session_state.has_api_key else "dummykey", 
+            st.session_state.proxy_url
+        ).models.list()
         if models:
             st.session_state.models = [model.id for model in models]
         else:
