@@ -11,7 +11,7 @@ def StSearch(
     interval: float = 0.5
 ):
     with container:
-        status = st.status("🌐 搜索 GitHub", state="error")
+        status = st.status("🌐 网络搜索", state="error")
         status.update(state="running")
         with status:
             chat_message = st.chat_message("assistant")
@@ -36,6 +36,7 @@ def StSearch(
                     return None
                 elif t == "SEARCH.FINISH":
                     status.update(state="complete")
+                    st.write("结果已提交")
                     return body
                 
                 elif t == "TOOL_CALL":

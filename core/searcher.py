@@ -13,20 +13,25 @@ logger = logging.getLogger("Searcher")
 
 class Searcher:
     def __init__(self, 
-        github_token: str, 
         llm_client,
         model_name: str = "gpt-4o-mini",
         temperature: float = 0.1,
         reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None,
+        github_token: str | None = None,
+        modelscope_token: str | None = None,
         **kwargs
     ):
-        auth = Auth.Token(github_token)
-        self.github = Github(auth=auth)
+        if github_token:
+            auth = Auth.Token(github_token)
+            self.github = Github(auth=auth)
+        else:
+            self.github = Github()
         self.searcher = SearcherAgent(
             llm_client, model_name, 
             github_client=self.github, 
             temperature=temperature,
             reasoning_effort=reasoning_effort,
+            modelscope_token=modelscope_token,
             **kwargs
         )
 
