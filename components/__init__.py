@@ -270,9 +270,10 @@ class cv_wrappers:
 # Usage: python image_enhancement_script.py <input_dir> <output_dir>
 
 import cv2
+import skimage
 import numpy as np
+import PIL
 from skimage import *
-import scipy
 import os
 import argparse
 import sys
