@@ -30,7 +30,7 @@ class EvaluatorAgent(BaseAgent):
 * `np` (numpy) 库
 * `cv2` (opencv-contrib-python) 库
 * `skimage` (scikit-image) 库
-* `scipy` 库
+* `PIL` (pillow) 库
 * `math` 标准库
 
 绝对不要假设存在其他未列出的第三方库，也不要使用其他标准库。
