@@ -101,10 +101,12 @@ class BayesianOptimizer:
         if orig_img is not None:
             logger.info(f"ORIG: {orig_img.shape[1]}x{orig_img.shape[0]}")
 
+        unicache = dict()
+
         def objective(trial: optuna.trial.Trial):
-            nonlocal code_str, evaluate_code_str, base_img
+            nonlocal code_str, evaluate_code_str, base_img, unicache
             try:
-                result_img = self.executor.execute_pipeline(code_str, base_img, trial)
+                result_img = self.executor.execute_pipeline(code_str, base_img, trial, unicache)
                 score = self.executor.execute_evaluate(evaluate_code_str, result_img, base_img)
                 
                 if score <= -5000.0: 

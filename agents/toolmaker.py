@@ -12,6 +12,7 @@ class ToolMakerAgent(BaseAgent):
         model_name: str = "gpt-4o-mini",
         temperature: float = 0.1,
         reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None,
+        additional_imports: list[str] | None = None,
         **kwargs
     ):
         """
@@ -22,6 +23,7 @@ class ToolMakerAgent(BaseAgent):
         :param temperature: 生成温度，低温度保证代码逻辑稳定性（0.0-0.2为宜）
         """
         # 构造CoderAgent专属的系统提示词，明确代码生成规则
+        self.additional_imports = additional_imports
         system_prompt = self._build_system_prompt()
         # 调用父类初始化（LLM客户端、模型名、系统提示词、温度）
         super().__init__(llm_client, model_name, system_prompt, temperature, reasoning_effort, **kwargs)
@@ -46,15 +48,23 @@ class ToolMakerAgent(BaseAgent):
 # CRITICAL Constraints (必须严格遵守的安全与代码约束)
 
 ## 1. 允许使用的环境与库
-- 你**只能**使用当前上下文中存在的以下库：`numpy` (作为 `np`), `cv2` (opencv-contrib-python), `skimage` (scikit-image), `scipy`, `math`。
+- 你**只能**使用当前上下文中存在的以下库：
+    - `numpy` (作为 `np`), `cv2` (opencv-contrib-python), `skimage` (scikit-image), `math`, `PIL` (pillow)。
+    - `torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`, {}
 - **绝对禁止**在输出的代码中使用 `import` 语句。你不能导入任何其他标准库（如 `os`, `sys`, `subprocess` 等）或第三方库。
 - **绝对禁止**使用 `exec`, `eval`, `open`, 以及任何带有文件系统或网络访问性质的代码。
 
 ## 2. 算子签名与规范
-- 函数名必须以 `safe_` 开头，例如：`def safe_cyberpunk_filter(...)`
-- 第一个参数**必须**是输入图像：`img: np.ndarray`。
-- 必须将可以调节的变量（如强度、阈值、卷积核大小）暴露为函数的入参，并赋予合理的默认值。
-- 函数的返回值**必须**是处理后的图像：`np.ndarray`。
+* 函数名必须以 `safe_` 开头，例如：`def safe_cyberpunk_filter(...)`
+* 第一个参数**必须**是输入图像：`img: np.ndarray`。
+* 函数会被多次运行，如果有重复使用的重加载内容，必须暴露 `cache: dict = {}` 入参。
+  - 利用`dict`的引用传递，使用单例模式设计，把重复使用的内容存储在特定的键值对中。
+  - 键必须以当前算子名称作为前缀，正确: `cache['anime_style_v1_model']`，错误：`cache['model']`
+  - 仅允许缓存模型实例（如 nn.Module, Pipeline）、分词器（Tokenizer）、处理器（Processor）等关键实例。**严禁** 将任何图像数据、Tensor 张量等中间结果放入 cache。
+  - 在将模型存入 cache 前，必须显式地将其 .to(device)，以确保后续调用时设备匹配。
+* 深度学习推理算子必须暴露 `device: str = 'cpu'` 和其他关键参数（如`tile_size`）为入参，并赋予合理的默认值。`device`必须要有确认和回落到`cpu`的逻辑。
+* 必须将可以调节的变量（如强度、阈值、卷积核大小）暴露为函数的入参，并赋予合理的默认值。
+* 函数的返回值**必须**是处理后的图像：`np.ndarray`。
 
 ## 3. 极致的防呆处理 (Defensive Programming)
 系统是自动化的，输入图像的格式可能会千奇百怪，你必须确保代码绝对不会导致进程崩溃：
@@ -80,12 +90,22 @@ class ToolMakerAgent(BaseAgent):
     "name": "函数名称，必须与代码中的 def 名称一致",
     "description": "一句话解释该算子的作用以及适用场景",
     "parameters": {
+      // 不要把 img 包含在 parameters 中
       "参数1": {
-        "type": "float/int/bool",
+        "type": "float/int/bool/str",
         "range": [最小值, 最大值], // 或 "options": [可选参数1, 可选参数2, 可选参数3]
         "description": "解释该参数的作用，以及值变大变小会带来什么影响"
-      }
-      // 不要把 img 包含在 parameters 中
+      },
+      // 如果需要单例模式缓存，cache 也需要暴露在 Schema 中
+      "cache" : { 
+        "type": "dict",
+        "description": "单例模式使用的缓存字典"
+      },
+      // 如果需要使用深度学习模型，必须暴露 device
+      "device": {
+        "type": "str"
+        // device 不需要 range 或 options 字段
+      },
     }
   }
 }
@@ -112,8 +132,10 @@ class ToolMakerAgent(BaseAgent):
   }
 }
 ```
-        """
-        return prompt.strip()
+        """.format(
+            ', '.join(self.additional_imports) if self.additional_imports is not None and self.additional_imports else ''
+        )
+        return prompt.strip(' \n')
     
     def generate_prompt(self, 
         user_intent: str = '', 

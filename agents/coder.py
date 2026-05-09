@@ -23,6 +23,7 @@ class CoderAgent(BaseAgent):
         temperature: float = 0.1, 
         reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None,
         low_res: bool = False,
+        additional_imports: list[str] | None = None,
         **kwargs
     ):
         """
@@ -33,10 +34,11 @@ class CoderAgent(BaseAgent):
         :param temperature: 生成温度，低温度保证代码逻辑稳定性（0.0-0.2为宜）
         """
         self.low_res = low_res
+        self.additional_imports = ', '.join(
+            f"`{imp}`" for imp in additional_imports
+        ) if additional_imports is not None and additional_imports else ''
         # 调用父类初始化（LLM客户端、模型名、系统提示词、温度）
         super().__init__(llm_client, model_name, self._build_system_prompt(), temperature, reasoning_effort, **kwargs)
-        # 加载全局算子注册表（供Prompt注入可用CV算子信息）
-        self.tools = global_registry._tools
         
         logger.info("CoderAgent 初始化完成，已加载全局算子注册表")
 
@@ -48,9 +50,8 @@ class CoderAgent(BaseAgent):
         构建专属系统提示词，明确代码生成的硬性规则和格式要求
         核心原则：让LLM生成可直接被Optuna调用、容错性强的process函数
         """
+
         # 从全局注册表中提取所有CV算子的Schema（供LLM参考可用函数）
-        tool_schemas = global_registry.get_all_schemas_for_llm()
-      
         prompt = f"""
 ### Role / 角色
 你是一个专家级的计算机视觉工程师和 Python 开发者。
@@ -66,7 +67,7 @@ class CoderAgent(BaseAgent):
    - **情况 B (工具缺失)**：如果用户的需求是某种特殊的风格化、特定的底层算法，且现有算子无论如何组合都无法达到目的，请放弃编写代码，转而输出一个 JSON 格式的“新工具请求”。
 
 ### Code Constraints / 代码约束
-* **函数签名**：必须严格为 `def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:`。
+* **函数签名**：必须严格为 `def process(img: np.ndarray, trial: optuna.Trial, cache: dict) -> np.ndarray:`。
 * **参数决策**：仔细研判用户需求，决定是否要对算子的特定参数进行调优。
     - 情况 A (需要调优)：必须使用 `trial` 对象获取参数
         - 例如：`d = trial.suggest_int("Bilateral_Filter_d", 1, 9)`
@@ -74,10 +75,13 @@ class CoderAgent(BaseAgent):
         - 例如：`ksize_median = trial.suggest_categorical("Median_Denoise_ksize", [3, 5, 7])`
     - 情况 B (不需要)：必须使用 **常数** 设置参数
         - 例如：`adjust_sigmoid_cutoff = 0.5`
-* **库访问**：你只能使用 `np` (numpy), `cv2` (opencv-contrib-python), `optuna`, `skimage` (scikit-image) 以及提供的算子库 `cv_wrappers`。
-* **算子调用**：所有算子必须通过 `cv_wrappers.算子名(img, **params)` 的形式调用。
-* **纯净性**：函数内不要包含 `import` 语句，不要定义全局变量。
-* **辅助函数**：允许编写辅助函数简化过程、提高可读性，辅助函数必须嵌套在process函数中。
+* **库访问**：你只能使用下列库：
+    - 基础处理: `np` (numpy), `cv2` (opencv-contrib-python), `optuna`, `skimage` (scikit-image), `PIL` (pillow) 以及提供的算子库 `cv_wrappers`
+    - 深度学习: `torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`, {self.additional_imports}
+* **算子调用**：所有算子必须通过 `cv_wrappers.算子名(img, **params)` 的形式调用
+* **纯净性**：函数内不要包含 `import` 语句，不要定义全局变量
+* **辅助函数**：允许编写辅助函数简化过程、提高可读性，辅助函数必须嵌套在process函数中
+* **单例模式**: 代码会被多次执行，只需要加载一次的内容必须放置在 `cache` 字典中
 
 ### Strategy & Best Practices / 策略建议
 * **命名规范**：在 `trial.suggest` 中使用 `"{{算子名}}_{{参数名}}"` 的命名方式，防止参数冲突。
@@ -97,14 +101,14 @@ class CoderAgent(BaseAgent):
 }
 
 ### Provided Schema / 算子库文档
-{tool_schemas}
+{global_registry.get_all_schemas_for_llm()}
 
 ### Output Format / 输出格式要求
 #### 格式 A：输出处理代码 (情况 A)
 你必须直接返回代码块，不要包含冗长的解释。代码结构应如下：
 
 ```python
-def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
+def process(img: np.ndarray, trial: optuna.Trial, cache: dict) -> np.ndarray:
     # 1. 参数采样 (基于 Schema 范围)
     # 2. 图像处理流程
     # 3. 返回处理结果
@@ -117,7 +121,7 @@ def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
 **Assistant Thinking:** 现有算子库中有 Bilateral_Filter，完全可以满足。
 **Assistant Response:**
 ```python
-def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
+def process(img: np.ndarray, trial: optuna.Trial, cache: dict) -> np.ndarray:
     # 针对“保边降噪”的需求，选择双边滤波 (Bilateral_Filter)
     
     # 1. 采样参数

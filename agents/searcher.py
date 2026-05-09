@@ -265,15 +265,21 @@ class SearcherAgent(BaseAgent):
 
 
 
-    def _submit_findings(self, 
+    def _submit_findings(
+        repo_id: str = '',
         code_snippets: str = '', 
         dependencies: str = '', 
-        summary: str = ''
+        summary: str = '', 
+        source: Literal['github', 'huggingface', 'modelscope'] | None = None,
+        require_files: list[str] | None = None
     ):
         return {
+            "repo_id": repo_id,
             "code_snippets": code_snippets,
             "dependencies": dependencies,
-            "summary": summary
+            "summary": summary,
+            "source": source,
+            "require_files": require_files
         }
 
     def _build_system_prompt(self) -> str:
@@ -289,7 +295,7 @@ class SearcherAgent(BaseAgent):
 
 # Objective
 根据用户的自然语言需求（例如：“寻找一段可以将图片卡通化的代码”或“找一个可以将图片动漫化的开源模型”），在 GitHub、Hugging Face 或 ModelScope 上定位最佳仓库/模型，提取可运行的核心算法或推理管道函数。
-**注意：是否启用 Hugging Face 和 ModelScope 检索，以及优先使用哪个平台，将由用户的具体要求或上下文决定。**
+**注意：是否启用 Hugging Face 和 ModelScope 检索，以及优先使用哪个平台，由用户的具体要求或上下文决定。**
 
 # Available Tools
 你必须严格按照逻辑顺序使用以下工具：
@@ -318,15 +324,18 @@ submit_findings(
     code_snippets: str = '', 
     dependencies: str = '', 
     summary: str = '', 
-    source: Literal['gh', 'hf', 'modelscope'] = 'gh',
-    require_files: list[str] | None = None
+    source: Optional[Literal['github', 'huggingface', 'modelscope']] = None,
+    require_files: Optional[list[str]] = None
 )
-``` 
+```
 * 当你找到了足够构建工具的代码或算法步骤，或者尝试了所有可能均宣告失败时，调用此工具结束任务。
   - `repo_id`: 你找到的仓库或模型的ID（如`deepseek-ai/DeepSeek-R1`）
-  - `code_snippets`: 对于传统代码，传入主要的处理逻辑即可。对于模型，还需要带上模型的载入逻辑（可以用`transformers`或`modelscope`直接`from_pretrained`吗？还是需要下载权重后自行加载？）。
-  - `dependencies`: `pypi`名称，以空格分隔，不要传入其他内容
-  - `source`: 这个项目来自哪个源
+  - `code_snippets`: 
+    - 对于传统代码，传入主要的处理逻辑即可。
+    - 对于模型，还需要带上模型的载入逻辑（可以用`transformers`或`modelscope`直接`from_pretrained`吗？还是需要下载权重后自行加载？）。
+    - 确保包含了必要的`import`语句
+  - `dependencies`: (仅人工智能) 包名，用于从`pypi`安装，以空格分隔，不要传入其他内容。
+  - `source`: 这个项目来自哪个源，可以填写`github`, `huggingface`或`modelscope`
   - `require_files`: (仅 HuggingFace 和 ModelScope) 需要下载的文件的路径列表（如权重文件等），为空表示下载整个仓库
 * 失败时不需要传入任何params，（可选）或可以传入`summary`解释原因。
 
@@ -346,12 +355,13 @@ submit_findings(
    - 我刚才看了什么？得到了什么结果？为什么有用/没用？
    - 下一步调用哪个工具？为什么？
    - 该代码/模型实现该功能的核心逻辑是什么？相比其他搜索结果有何优劣？
+   - (可选) 尽可能精简的其他必要的跨步骤知识
 2. **过滤噪音:** 绝对不要进入或读取 `tests/`, `docs/`, `assets/`, `.git/`, 模型权重文件（如 `.bin`, `.safetensors`）或配置文件。只关注核心源码和 README。
 3. **步数限制:** 你的探索必须高效。如果连续在 5 个不同的文件中都没有找到核心逻辑，必须立即放弃该仓库，去查看下一个仓库。
 4. **切勿生造代码:** 你的任务是“寻找和搬运”，**绝对不要**杜撰不存在的模型调用 API 或算法逻辑。如果没找到，直接提交“未找到”。
 5. **动态审查依赖:** 
-   - 对于 **GitHub 传统算法**：务必注意代码是否可以仅使用 `numpy`, `cv2` (opencv-contrib-python), `skimage`, `scipy`, `math`, `PIL` 实现。
-   - 对于 **Hugging Face / ModelScope 模型**：环境已经预装常用依赖 `torch`, `transformers`, `diffusers`, `modelscope`。如果有其他必要的依赖，在 `submit_findings` 时必须准确列出。
+   - 对于 **GitHub 传统算法**：务必注意代码是否可以仅使用 `numpy`, `cv2` (opencv-contrib-python), `skimage`, `math`, `PIL` 实现。
+   - 对于 **Hugging Face / ModelScope 模型**：环境已经预装常用依赖 `torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`。如果有其他必要的依赖，在 `submit_findings` 时必须准确列出。
 6. **跨语言参考 (仅限GitHub):** 当且仅当多次尝试无法找到Python实现时，允许对其他语言的代码进行总结提炼，提交转写后的伪代码或Python代码。
 7. **错误处理:** 遇到网络或 API 错误等无法修复的问题，直接提交“未找到”，并在 `summary` 字段说明。
 8. **见好就收:** 如果寻找多个目标后仍有部分功能无法实现，选择能实现最多功能的进行提交，不要因贪心超出步数限制。
