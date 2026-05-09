@@ -247,6 +247,10 @@ if 'ui_scene' not in st.session_state:
 def get_evaluator(raw_array: np.ndarray):
     return Evaluator(raw_array, get_model_cache())
 
+@st.cache_resource
+def get_thumb_evaluator(raw_array: np.ndarray, size: tuple[int, int]):
+    return Evaluator(raw_array, get_model_cache())
+
 # 如果有历史结果，并在界面顶部展示原图与当前最佳进度的对比
 if upload:
     img_bgr = load_bgr_img_from_file(upload)
@@ -267,6 +271,14 @@ if upload:
         with wait_init:
             evaluator = get_evaluator(img_bgr)
             st.session_state['evaluator'] = evaluator
+            # st.session_state['process_evaluator'] = evaluator
+
+            # if st.session_state.low_res_process:
+            #     resized, thumb_size = get_thumbnail_size(img_bgr, st.session_state.process_img_max_side)
+            #     if resized:
+            #         st.session_state['process_evaluator'] = get_thumb_evaluator(
+            #             img_bgr, thumb_size
+            #         )
 
         if st.session_state['enable_learning_evaluator']:
             with wait_init:
@@ -283,6 +295,7 @@ else:
     load_bgr_img_from_file.clear()
     get_thumbnail_img.clear()
     get_evaluator.clear()
+    get_thumb_evaluator.clear()
     st.stop()
 
 if st.session_state.ui_scene == "Playground":
@@ -406,9 +419,14 @@ if user_feedback:
 
             evaluate_handler = StStreamResHandler(eva_status, eva_thinking_container)
 
+            img_to_process = st.session_state['best_bgr'] if step_by_step and st.session_state['best_bgr'] is not None else img_bgr
+
             for t, body in orch.prepare_stream(
-                image=img_bgr, 
-                user_prompt=generate_user_prompt(user_feedback, True, True, step_by_step)
+                image=img_to_process,
+                model_cache=get_model_cache(),
+                device=st.session_state.get('device_learning_evaluator'),
+                user_prompt=generate_user_prompt(user_feedback, True, True, step_by_step),
+                max_side=process_img_max_side if low_res_process else 0
             ):
                 if t == "CODE_EVALUATE.START":
                     eva_status.update(state="running")
@@ -431,8 +449,6 @@ if user_feedback:
                 tool_status = None
                 search_result = dict()
                 coder_handler = StStreamResHandler(code_status, code_thinking_container)
-
-                img_to_process = st.session_state['best_bgr'] if step_by_step and st.session_state['best_bgr'] is not None else img_bgr
 
                 orch.coder.rebuild_system_prompt()
                 for t, body in orch.process_stream(

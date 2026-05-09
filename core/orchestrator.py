@@ -10,7 +10,7 @@ from agents.toolmaker import ToolMakerAgent
 
 from sandbox.executor import SandboxExecutor
 from core.optimizer import BayesianOptimizer
-# from core.evaluator import Evaluator
+from core.evaluator import Evaluator
 
 from typing import Generator, Callable, Iterable, Literal
 from queue import Queue
@@ -101,7 +101,10 @@ class Orchestrator:
        
     def prepare_stream(self,
         image: np.ndarray, 
+        model_cache: dict,
+        device: str | None = None,
         user_prompt: str = '', 
+        max_side: int = 0
     ) -> Generator[tuple[
             Literal[
                 'CODE_EVALUATE.START', 'CODE_EVALUATE.END', 'CODE_EVALUATE.STREAM', 
@@ -111,6 +114,17 @@ class Orchestrator:
         ], None, None]:
         error_log = None
         code_str = ""
+
+        img_to_eval = None
+        if max_side > 0:
+            h, w = image.shape[:2]
+            if (curr_max_side := max(h, w)) > max_side:
+                scale = max_side / curr_max_side
+                img_to_eval = cv2.resize(
+                    image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA
+                )
+        else:
+            img_to_eval = image
 
         for attempt in range(self.max_llm_retries):
             yield "CODE_EVALUATE.START", None
@@ -125,8 +139,9 @@ class Orchestrator:
 
             # 尝试做一次空跑验证语法
             try:
-                self.evaluator = self.executor.prepare_evaluate_code(code_str, image)
-                self.executor.execute_evaluate(code_str, image, image)
+                self.evaluator = Evaluator(img_to_eval, model_cache, device)
+                self.executor.prepare_evaluate_code(code_str, self.evaluator)
+                self.executor.execute_evaluate(code_str, image, self.evaluator)
                 break
             except:
                 raise

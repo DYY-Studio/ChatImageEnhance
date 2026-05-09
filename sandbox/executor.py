@@ -1,17 +1,26 @@
 import optuna
 import numpy as np
 import ast
+import importlib, importlib.util
+import sys
+import subprocess
 import cv2
 import time
 import inspect
 import skimage
-import scipy
+import PIL
+
+import torch
+import torchvision
+import modelscope
+import transformers
+import diffusers
 
 from tools import global_registry
 from core.evaluator import Evaluator
 from sandbox.code_checker import AgentCodeChecker, SecurityViolation
 from types import SimpleNamespace
-from typing import Callable
+from typing import Callable, Iterable
 
 from RestrictedPython import utility_builtins, safe_builtins
 
@@ -24,7 +33,12 @@ class SandboxExecutor:
         cv2 = cv2,
         optuna = optuna,
         skimage = skimage,
-        scipy = scipy,
+        PIL = PIL,
+        torch = torch,
+        torchvision = torchvision,
+        modelscope = modelscope,
+        transformers = transformers,
+        diffusers = diffusers,
         __builtins__ = dict(
             max = max,
             min = min,
@@ -46,10 +60,29 @@ class SandboxExecutor:
     _eva_func: Callable[[np.ndarray], float] | None = None
     _eva_code: int | None = None
 
-    def __init__(self, timeout_seconds: int = 5):
+    def __init__(self, 
+        timeout_seconds: int = 5, 
+        additional_imports: Iterable[str] | None = None,
+        additional_packages: Iterable[str] | None = None
+    ):
         self.timeout = timeout_seconds
         # 占位，防止运行时间过长
         self.registry = global_registry
+
+        if additional_packages is not None and additional_packages:
+            pip_command = [sys.executable, '-m', 'pip', 'install']
+            pip_command.extend(additional_packages)
+            retval = subprocess.check_call(pip_command)
+            if retval != 0:
+                raise RuntimeError("pip dynamic install failed")
+
+        if additional_imports is not None and additional_imports:
+            for imp in additional_imports:
+                if importlib.util.find_spec(imp):
+                    module = importlib.import_module(imp)
+                    self._base_namespace[imp] = module
+                else:
+                    raise RuntimeError(f"Cannot import module {imp}")
 
     @staticmethod
     def get_keys_iters(d):
@@ -67,10 +100,10 @@ class SandboxExecutor:
     def base_namespace(self):
         return SandboxExecutor.get_keys_iters(self._base_namespace)
     
-    def prepare_evaluate_code(self, code_str: str, orig_img: np.ndarray) -> Evaluator:
+    def prepare_evaluate_code(self, code_str: str, evaluator: Evaluator):
         exec_context = self._base_namespace.copy()
 
-        exec_context["vision_metrics"] = Evaluator(orig_img)
+        exec_context["vision_metrics"] = evaluator
 
         # 3. 动态执行
         try:
@@ -104,8 +137,6 @@ class SandboxExecutor:
             raise
         except Exception as e:
             raise
-
-        return exec_context["vision_metrics"]
     
     def prepare_code(self, code_str: str):
         exec_context = self._base_namespace.copy()
@@ -137,7 +168,8 @@ class SandboxExecutor:
             sig = inspect.signature(process_func)
             sig.bind(
                 np.random.randint(0, 256, (48, 64), dtype=np.uint8),
-                optuna.trial.FixedTrial({})
+                optuna.trial.FixedTrial({}),
+                dict()
             )
             
             self._func = process_func
@@ -215,7 +247,7 @@ class SandboxExecutor:
         except Exception as e:
             return e
 
-    def execute_pipeline(self, code_str: str, img: np.ndarray, trial: optuna.Trial) -> np.ndarray | Exception:
+    def execute_pipeline(self, code_str: str, img: np.ndarray, trial: optuna.Trial, cache: dict) -> np.ndarray | Exception:
         """
         使用 exec() 执行 code_str。
 
@@ -227,9 +259,9 @@ class SandboxExecutor:
         if not self._func or self._code != hash(code_str):
             self.prepare_code(code_str)
 
-        return self._func(img, trial)
+        return self._func(img, trial, cache)
     
-    def execute_evaluate(self, code_str: str, img: np.ndarray, orig_img: None | np.ndarray = None) -> float:
+    def execute_evaluate(self, code_str: str, img: np.ndarray, evaluator: Evaluator) -> float:
         """
         使用 exec() 执行 code_str。
 
@@ -239,7 +271,7 @@ class SandboxExecutor:
         """
         # 创建一个命名空间，注册基础组件
         if not self._eva_func or self._eva_code != hash(code_str):
-            self.prepare_evaluate_code(code_str, orig_img)
+            self.prepare_evaluate_code(code_str, evaluator)
 
         return self._eva_func(img)
     

@@ -21,7 +21,7 @@ class Evaluator:
     def __init__(self, 
         original_img: np.ndarray, 
         model_cache: dict[str, Any] | None = None, 
-        device: str | torch.device | None = None
+        device: str | None = None
     ):
         self.original_img = original_img
 
@@ -307,7 +307,7 @@ class Evaluator:
     # =========================
 
     def _load_lpips(self, net: str = 'alex'):
-        cache_key = f"lpips_{net}"
+        cache_key = f"lpips_{net}_{self.device}"
         # 懒加载：仅在第一次调用此网络时实例化
         if cache_key not in self.model_cache:
             unloads = []
@@ -339,7 +339,7 @@ class Evaluator:
         pretrained: str = 'laion2b_s34b_b79k',
         tokenizer: bool = True,
     ):
-        cache_key = f"{cache_prefix}_{model_name}_{pretrained}"
+        cache_key = f"{cache_prefix}_{model_name}_{pretrained}_{self.device}"
         
         # 懒加载：将 model, preprocess 和 tokenizer 打包缓存
         if cache_key not in self.model_cache:
