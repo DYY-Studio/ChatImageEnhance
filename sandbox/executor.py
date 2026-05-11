@@ -56,9 +56,11 @@ class SandboxExecutor:
 
     _func: Callable[[np.ndarray, optuna.Trial], np.ndarray] | None = None
     _code: int | None = None
+    _func_accepts_cache: bool | None = None
 
     _eva_func: Callable[[np.ndarray], float] | None = None
     _eva_code: int | None = None
+    _installed_packages: set[str] = set()
 
     def __init__(self, 
         timeout_seconds: int = 5, 
@@ -69,20 +71,52 @@ class SandboxExecutor:
         # 占位，防止运行时间过长
         self.registry = global_registry
 
-        if additional_packages is not None and additional_packages:
-            pip_command = [sys.executable, '-m', 'pip', 'install']
-            pip_command.extend(additional_packages)
+        self.extend_runtime(additional_imports=additional_imports, additional_packages=additional_packages)
+
+    @staticmethod
+    def _normalize_package_name(package: str) -> str:
+        normalized = package.strip()
+        if not normalized:
+            return ""
+        return normalized
+
+    def _install_packages(self, packages: Iterable[str] | None):
+        if packages is None:
+            return
+
+        for package in packages:
+            package = self._normalize_package_name(str(package))
+            if not package or package in self._installed_packages:
+                continue
+
+            pip_command = [sys.executable, "-m", "pip", "install", package]
             retval = subprocess.check_call(pip_command)
             if retval != 0:
-                raise RuntimeError("pip dynamic install failed")
+                raise RuntimeError(f"pip dynamic install failed: {package}")
+            self._installed_packages.add(package)
 
-        if additional_imports is not None and additional_imports:
-            for imp in additional_imports:
-                if importlib.util.find_spec(imp):
-                    module = importlib.import_module(imp)
-                    self._base_namespace[imp] = module
-                else:
-                    raise RuntimeError(f"Cannot import module {imp}")
+    def _import_modules(self, imports: Iterable[str] | None):
+        if imports is None:
+            return
+
+        for imp in imports:
+            mod_name = str(imp).strip()
+            if not mod_name:
+                continue
+
+            if importlib.util.find_spec(mod_name):
+                module = importlib.import_module(mod_name)
+                self._base_namespace[mod_name] = module
+            else:
+                raise RuntimeError(f"Cannot import module {mod_name}")
+
+    def extend_runtime(
+        self,
+        additional_imports: Iterable[str] | None = None,
+        additional_packages: Iterable[str] | None = None
+    ):
+        self._install_packages(additional_packages)
+        self._import_modules(additional_imports)
 
     @staticmethod
     def get_keys_iters(d):
@@ -166,11 +200,19 @@ class SandboxExecutor:
                 raise ValueError("Agent 代码中未定义 process 函数")
             
             sig = inspect.signature(process_func)
-            sig.bind(
-                np.random.randint(0, 256, (48, 64), dtype=np.uint8),
-                optuna.trial.FixedTrial({}),
-                dict()
-            )
+            self._func_accepts_cache = True
+            try:
+                sig.bind(
+                    np.random.randint(0, 256, (48, 64), dtype=np.uint8),
+                    optuna.trial.FixedTrial({}),
+                    dict()
+                )
+            except TypeError:
+                sig.bind(
+                    np.random.randint(0, 256, (48, 64), dtype=np.uint8),
+                    optuna.trial.FixedTrial({})
+                )
+                self._func_accepts_cache = False
             
             self._func = process_func
             self._code = hash(code_str)
@@ -247,7 +289,13 @@ class SandboxExecutor:
         except Exception as e:
             return e
 
-    def execute_pipeline(self, code_str: str, img: np.ndarray, trial: optuna.Trial, cache: dict) -> np.ndarray | Exception:
+    def execute_pipeline(
+        self,
+        code_str: str,
+        img: np.ndarray,
+        trial: optuna.Trial,
+        cache: dict | None = None
+    ) -> np.ndarray | Exception:
         """
         使用 exec() 执行 code_str。
 
@@ -259,7 +307,10 @@ class SandboxExecutor:
         if not self._func or self._code != hash(code_str):
             self.prepare_code(code_str)
 
-        return self._func(img, trial, cache)
+        runtime_cache = cache if cache is not None else {}
+        if self._func_accepts_cache:
+            return self._func(img, trial, runtime_cache)
+        return self._func(img, trial)
     
     def execute_evaluate(self, code_str: str, img: np.ndarray, evaluator: Evaluator) -> float:
         """
@@ -275,7 +326,13 @@ class SandboxExecutor:
 
         return self._eva_func(img)
     
-    def execute_pipeline_direct(self, code_str: str, img: np.ndarray, params: dict) -> np.ndarray:
+    def execute_pipeline_direct(
+        self,
+        code_str: str,
+        img: np.ndarray,
+        params: dict,
+        cache: dict | None = None
+    ) -> np.ndarray:
         """
         通过注入 Fake Trial 实现参数复用。
         """
@@ -285,4 +342,7 @@ class SandboxExecutor:
         # 实例化伪造的 Trial
         fake_trial = optuna.trial.FixedTrial(params)
 
+        runtime_cache = cache if cache is not None else {}
+        if self._func_accepts_cache:
+            return self._func(img, fake_trial, runtime_cache)
         return self._func(img, fake_trial)

@@ -33,9 +33,12 @@ class BayesianOptimizer:
 
         返回: {'best_score': float, 'best_params': dict, 'best_img': np.ndarray, 'n_trials_used': int}
         """
+        unicache = dict()
+
         def objective(trial):
+            nonlocal unicache
             try:
-                result_img = self.executor.execute_pipeline(code_str, base_img, trial)
+                result_img = self.executor.execute_pipeline(code_str, base_img, trial, unicache)
                 score = self.executor.execute_evaluate(evaluate_code_str, result_img, base_img)
                 
                 if score <= -5000.0: 
@@ -52,7 +55,7 @@ class BayesianOptimizer:
                 "best_score": None,
                 "best_params": None,
                 "best_img": self.executor.execute_pipeline_direct(
-                    code_str, orig_img, {}
+                    code_str, orig_img, {}, unicache
                 ),
                 "n_trials_used": 0
             }
@@ -68,7 +71,7 @@ class BayesianOptimizer:
                 "best_score": study.best_value,
                 "best_params": study.best_params,
                 "best_img": self.executor.execute_pipeline_direct(
-                    code_str, orig_img, study.best_params
+                    code_str, orig_img, study.best_params, unicache
                 ),
                 # ===== [新增] 返回实际使用的trial数 =====
                 "n_trials_used": n_trials_used
@@ -130,7 +133,7 @@ class BayesianOptimizer:
                 "best_score": None,
                 "best_params": None,
                 "best_img": self.executor.execute_pipeline_direct(
-                    code_str, orig_img, {}
+                    code_str, orig_img, {}, unicache
                 ),
                 "n_trials_used": 0
             }
@@ -147,7 +150,7 @@ class BayesianOptimizer:
                 "best_score": study.best_value,
                 "best_params": study.best_params,
                 "best_img": self.executor.execute_pipeline_direct(
-                    code_str, orig_img, study.best_params
+                    code_str, orig_img, study.best_params, unicache
                 ),
                 # ===== [新增] 返回实际使用的trial数 =====
                 "n_trials_used": n_trials_used

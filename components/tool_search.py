@@ -27,16 +27,18 @@ def StSearch(
                 elif t.startswith("SEARCH.CONTENT"):
                     handler.thinking_end()
                     handler.content_chunk(body)
-                elif t in ('SEARCH.API_LIMIT_REACHED', 'SEARCH.STEPS_LIMIT_REACHED'):
-                    if t == 'SEARCH.STEPS_LIMIT_REACHED':
+                elif t == 'SEARCH.STEPS_LIMIT_REACHED':
+                    with chat_message:
                         st.write('🚫 已达到搜索步骤数上限')
-                    elif t == 'SEARCH.API_LIMIT_REACHED':
-                        st.write('🚫 已达到 GitHub Search API 访问上限')
-                    status.update(state="error")
-                    return None
+                        status.update(state="error")
+                        return None
+                elif t == 'SEARCH.API_LIMIT_REACHED':
+                    with chat_message:
+                        st.write('⚠️ GitHub Search API 访问上限已达，系统将继续尝试 HuggingFace / ModelScope')
                 elif t == "SEARCH.FINISH":
                     status.update(state="complete")
-                    st.write("结果已提交")
+                    with chat_message:
+                        st.write("结果已提交")
                     return body
                 
                 elif t == "TOOL_CALL":

@@ -50,7 +50,7 @@ class ToolMakerAgent(BaseAgent):
 ## 1. 允许使用的环境与库
 - 你**只能**使用当前上下文中存在的以下库：
     - `numpy` (作为 `np`), `cv2` (opencv-contrib-python), `skimage` (scikit-image), `math`, `PIL` (pillow)。
-    - `torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`, {}
+    - `torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`, $DYNAMIC_IMPORTS$
 - **绝对禁止**在输出的代码中使用 `import` 语句。你不能导入任何其他标准库（如 `os`, `sys`, `subprocess` 等）或第三方库。
 - **绝对禁止**使用 `exec`, `eval`, `open`, 以及任何带有文件系统或网络访问性质的代码。
 
@@ -132,8 +132,14 @@ class ToolMakerAgent(BaseAgent):
   }
 }
 ```
-        """.format(
-            ', '.join(self.additional_imports) if self.additional_imports is not None and self.additional_imports else ''
+        """.replace(
+            '$DYNAMIC_IMPORTS$', 
+            (
+                ', '.join(self.additional_imports) 
+                if self.additional_imports is not None and self.additional_imports 
+                else ''
+            ),
+            1
         )
         return prompt.strip(' \n')
     

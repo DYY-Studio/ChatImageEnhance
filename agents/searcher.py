@@ -48,7 +48,8 @@ class SearcherAgent(BaseAgent):
         )
         self.modelscope_hubapi = HubApi(token=modelscope_token)
         self.hf_api = HfApi("https://hf-mirror.com", token=huggingface_token)
-        github_client.per_page = 10
+        if github_client is not None:
+            github_client.per_page = 10
         self.curr_repo = None
         self.query_cache: dict[str, str] = {}
 
@@ -215,7 +216,7 @@ class SearcherAgent(BaseAgent):
 
 
     def _search_models_hf(self, query: str, filter: str | None = None, pipeline_tag: str | None = None):
-        models = self.hf_api.list_models(search=query, filter=filter, pipeline_tag=pipeline_tag, limit=10)
+        models = list(self.hf_api.list_models(search=query, filter=filter, pipeline_tag=pipeline_tag, limit=10))
         if models:
             return yaml.dump([{
                 "id": model.id,
@@ -227,8 +228,8 @@ class SearcherAgent(BaseAgent):
     
         return 'No result'
     
-    def _list_directory_hf(self, model_id: str, path: str):
-        files = list(self.hf_api.list_repo_tree(model_id, path))
+    def _list_directory_hf(self, model_id: str, path: str | None = None):
+        files = list(self.hf_api.list_repo_tree(model_id, path or ""))
         if not files:
             return 'No files'
         return yaml.dump([
@@ -251,7 +252,7 @@ class SearcherAgent(BaseAgent):
             if full or len(readme) < 4096:
                 return readme
             else:
-                return readme + '... (over 4096 chars)'
+                return readme[:4096] + '... (over 4096 chars)'
         else:
             return 'No README.md'
 
@@ -266,6 +267,7 @@ class SearcherAgent(BaseAgent):
 
 
     def _submit_findings(
+        self,
         repo_id: str = '',
         code_snippets: str = '', 
         dependencies: str = '', 

@@ -44,7 +44,13 @@ class Orchestrator:
             return False, traceback.format_exc()
         return True, None
 
-    def toolmaker_stream(self, tool_request: str, search_result: dict | None = None) -> Generator[tuple[
+    def toolmaker_stream(
+        self,
+        tool_request: str,
+        search_result: dict | None = None,
+        additional_imports: Iterable[str] | None = None,
+        additional_packages: Iterable[str] | None = None
+    ) -> Generator[tuple[
         Literal[
             "CODE_TOOL.START", "CODE_TOOL.END", "CODE_TOOL.STREAM", "CODE_TOOL.TEST",
             "CODE_TOOL.REASONING", "FINISH", "ERROR_RETRY"
@@ -53,6 +59,24 @@ class Orchestrator:
     ], None, None]:
         toolmaker_prompt = f"用户需求: \n{tool_request}"
         if isinstance(search_result, dict) and 'code_snippets' in search_result and 'summary' in search_result:
+            extra_lines = []
+            if search_result.get("source"):
+                extra_lines.append(f"- 来源: {search_result['source']}")
+            if search_result.get("repo_id"):
+                extra_lines.append(f"- 仓库/模型ID: {search_result['repo_id']}")
+            if search_result.get("dependencies"):
+                extra_lines.append(f"- 额外依赖: {search_result['dependencies']}")
+            if search_result.get("download_dir"):
+                extra_lines.append(f"- 本地下载目录: {search_result['download_dir']}")
+            if isinstance(search_result.get("downloaded_files"), list) and search_result["downloaded_files"]:
+                extra_lines.append(
+                    "- 已下载文件:\n  " + "\n  ".join(str(p) for p in search_result["downloaded_files"])
+                )
+            if search_result.get("download_error"):
+                extra_lines.append(f"- 下载失败信息: {search_result['download_error']}")
+            if additional_imports:
+                extra_lines.append(f"- 可用额外模块: {', '.join(additional_imports)}")
+
             search_result_str = f"""
 提取到的代码:
 ```
@@ -61,12 +85,20 @@ class Orchestrator:
 
 概述
 {search_result['summary']}
+
+附加信息
+{chr(10).join(extra_lines) if extra_lines else "无"}
 """.strip(' \n')
             toolmaker_prompt += f"\n检索结果: \n{search_result_str}"
 
         error_log = None
         code_str = ""
         schema = {}
+
+        self.executor.extend_runtime(
+            additional_imports=additional_imports,
+            additional_packages=additional_packages
+        )
 
         for attempt in range(self.max_llm_retries):
             yield "CODE_TOOL.START", None
@@ -261,4 +293,3 @@ class Orchestrator:
         # ===== [新增] 提取实际使用的trial数并返回 =====
         n_trials_used = optimization_result.get('n_trials_used', n_trials)
         yield 'FINISH', (optimization_result['best_img'], optimization_result['best_params'], '', n_trials_used)
-    

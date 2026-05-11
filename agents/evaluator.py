@@ -15,8 +15,8 @@ class EvaluatorAgent(BaseAgent):
         allow_learning: bool = False,
         **kwargs
     ):
-        super().__init__(llm_client, model_name, self._build_system_prompt(), temperature, reasoning_effort, **kwargs)
         self.allow_learning = allow_learning
+        super().__init__(llm_client, model_name, self._build_system_prompt(), temperature, reasoning_effort, **kwargs)
 
     def _build_system_prompt(self) -> str:
         return """

@@ -50,6 +50,10 @@ if 'proxy_url' not in st.session_state:
     st.session_state['proxy_url'] = localS.getItem('proxy_url') or ""
 if 'github_token' not in st.session_state:
     st.session_state['github_token'] = localS.getItem('github_token') or ""
+if 'huggingface_token' not in st.session_state:
+    st.session_state['huggingface_token'] = localS.getItem('huggingface_token') or ""
+if 'modelscope_token' not in st.session_state:
+    st.session_state['modelscope_token'] = localS.getItem('modelscope_token') or ""
 if 'reasoning_effort' not in st.session_state:
     st.session_state['reasoning_effort'] = None
 if 'process_img_max_side' not in st.session_state:
@@ -152,16 +156,17 @@ with st.sidebar:
         )
 
     with st.expander("代码检索", expanded=True):
-        st.text("这是什么", help="缺少工具时，使用GitHub REST API检索相关的代码，需要填写Token才能使用")
+        st.text("这是什么", help="缺少工具时，可通过 GitHub / HuggingFace / ModelScope 检索相关代码或模型。")
         github_token = st.text_input("GitHub Token", type='password', key="github_token")
+        huggingface_token = st.text_input("HuggingFace Token", type='password', key="huggingface_token")
         modelscope_token = st.text_input("ModelScope Token", type='password', key="modelscope_token")
         search_steps_limit = st.slider(
-            "搜索步骤数限制", 10, 100, 30, step=1, disabled=not github_token,
+            "搜索步骤数限制", 10, 100, 30, step=1,
             help="限制最多 LLM 调用次数，防止难以找到时无限运行",
             key="search_steps_limit"
         )
         search_interval = st.slider(
-            "强制步骤间隔 (秒)", 0.0, 60.0, 5.0, step=0.5, disabled=not github_token,
+            "强制步骤间隔 (秒)", 0.0, 60.0, 5.0, step=0.5,
             help="强行在两次请求之间插入间隔，防止请求过于频繁",
             key="search_interval"
         )
@@ -213,7 +218,7 @@ with st.sidebar:
                     key="process_img_max_side"
                 )
 
-    if (cache_api := fetch_button and st.session_state.models) or github_token:
+    if (cache_api := fetch_button and st.session_state.models) or github_token or huggingface_token or modelscope_token:
         with st.container(height=1, border=False):
             if cache_api:
                 if api_url: localS.setItem("api_url", api_url, "locals_api_url")
@@ -228,8 +233,33 @@ with st.sidebar:
             if github_token: localS.setItem("github_token", github_token, "locals_github_token")
             elif localS.getItem("github_token"): localS.deleteItem("github_token", "del_locals_github_token")
 
+            if huggingface_token: localS.setItem("huggingface_token", huggingface_token, "locals_huggingface_token")
+            elif localS.getItem("huggingface_token"): localS.deleteItem("huggingface_token", "del_locals_huggingface_token")
+
+            if modelscope_token: localS.setItem("modelscope_token", modelscope_token, "locals_modelscope_token")
+            elif localS.getItem("modelscope_token"): localS.deleteItem("modelscope_token", "del_locals_modelscope_token")
+
+if st.session_state.ui_scene in ("ToolMaker", "Chat"):
+    client = get_openai_client(st.session_state.api_url, st.session_state.api_key, st.session_state.proxy_url)
+    orch = Orchestrator(
+        CoderAgent(
+            client, selected_model, 
+            reasoning_effort=st.session_state.reasoning_effort, 
+            low_res=low_res_process
+        ),
+        EvaluatorAgent(
+            client, selected_model, 
+            reasoning_effort=st.session_state.reasoning_effort,
+            allow_learning=st.session_state.enable_learning_evaluator
+        ),
+        ToolMakerAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort)
+    )
+else:
+    client = None
+    orch = None
+
 if st.session_state.ui_scene == "ToolMaker":
-    render_toolmaker()
+    render_toolmaker(orch)
     st.stop()
 
 upload = st.file_uploader("上传图像", ["png", "jpg", "jpeg"])
@@ -365,21 +395,6 @@ if user_feedback:
             
             st.rerun()
 
-        client = get_openai_client(st.session_state.api_url, st.session_state.api_key, st.session_state.proxy_url)
-        orch = Orchestrator(
-            CoderAgent(
-                client, selected_model, 
-                reasoning_effort=st.session_state.reasoning_effort, 
-                low_res=low_res_process
-            ),
-            EvaluatorAgent(
-                client, selected_model, 
-                reasoning_effort=st.session_state.reasoning_effort,
-                allow_learning=st.session_state.enable_learning_evaluator
-            ),
-            ToolMakerAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort)
-        )
-
         with (main_status := st.status("🛠️ 根据反馈调整并运行...", expanded=True)):
             with (eva_status := st.status("📝 LLM 调整评价策略", state="error")):
                 eva_thinking_container = st.container(border=False)
@@ -483,18 +498,26 @@ if user_feedback:
                         code_status.update(state='error')
                         tool_request = body['description']
 
-                        if github_token:
+                        if github_token or huggingface_token or modelscope_token:
                             with main_container:
                                 with (tool_status := st.status("⌨️ LLM 编写额外工具", state="error")):
                                     search_container = st.container(border=False)
 
                                 tool_status.update(state='running')
                                 if search_container:
-                                    if github_token:
-                                        searcher = Searcher(client, selected_model, github_token=github_token, modelscope_token=modelscope_token)
-                                        search_result: dict = StSearch(
-                                            searcher, tool_request, search_container, search_steps_limit, search_interval
-                                        )
+                                    searcher = Searcher(
+                                        client, selected_model,
+                                        github_token=github_token,
+                                        huggingface_token=huggingface_token,
+                                        modelscope_token=modelscope_token
+                                    )
+                                    search_result = StSearch(
+                                        searcher, tool_request, search_container, search_steps_limit, search_interval
+                                    )
+                                    if isinstance(search_result, dict):
+                                        search_result = searcher.enrich_findings(search_result, auto_download=True)
+                                        if search_result.get("download_error"):
+                                            st.warning(f"模型资产下载失败：{search_result['download_error']}")
                         break
                 
                 if tool_request:
@@ -509,7 +532,21 @@ if user_feedback:
 
                     toolmaker_handler = StStreamResHandler(toolmaker_status, toolmaker_container)
                         
-                    for t, body in orch.toolmaker_stream(tool_request, search_result):
+                    runtime_imports = (
+                        search_result.get("additional_imports")
+                        if isinstance(search_result, dict) else None
+                    )
+                    runtime_packages = (
+                        search_result.get("additional_packages")
+                        if isinstance(search_result, dict) else None
+                    )
+
+                    for t, body in orch.toolmaker_stream(
+                        tool_request,
+                        search_result,
+                        additional_imports=runtime_imports,
+                        additional_packages=runtime_packages
+                    ):
                         if t == "CODE_TOOL.STREAM":
                             toolmaker_handler.content_chunk(body)
                             toolmaker_handler.thinking_end()
