@@ -80,11 +80,18 @@ def render_toolmaker(orch: Orchestrator):
                     st.info("完成！")
                 toolmaker_handler.content_end()
             elif t == "ERROR_RETRY":
+                with toolmaker_placeholder:
+                    st.error("测试失败，要求重新编写")
                 with main_container:
                     with tool_status:
                         with (toolmaker_status := st.status("⌨️ 编写工具", state="error")):
                             toolmaker_container = st.container(border=False)
+                            toolmaker_placeholder = st.empty()
                 
                 toolmaker_handler = StStreamResHandler(toolmaker_status, toolmaker_container)
             elif t == "FINISH":
+                with main_container:
+                    st.info("运行结束")
+                    st.markdown('```python\n' + body.get('code') + '\n```')
+                    st.json(body['schema'])
                 new_tool = body
