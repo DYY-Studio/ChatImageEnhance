@@ -14,6 +14,219 @@ from typing import Literal, Callable
 
 logger = logging.getLogger("BaseComponents")
 
+def _normalize_import_list(values) -> list[str]:
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, (list, tuple, set)):
+        return []
+
+    normalized: list[str] = []
+    for item in values:
+        token = str(item or "").strip()
+        if not token:
+            continue
+        if token in normalized:
+            continue
+        normalized.append(token)
+    return normalized
+
+def _package_to_import_name(package: str) -> str | None:
+    token = str(package or "").strip()
+    if not token:
+        return None
+    token = token.split(";", maxsplit=1)[0].strip()
+    token = token.split("[", maxsplit=1)[0].strip()
+    token = re.split(r"(==|!=|>=|<=|>|<|~=)", token, maxsplit=1)[0].strip()
+    if not token:
+        return None
+
+    alias = {
+        "pillow": "PIL",
+        "opencv-python": "cv2",
+        "opencv-contrib-python": "cv2",
+        "opencv-python-headless": "cv2",
+        "scikit-image": "skimage",
+        "pyyaml": "yaml",
+        "huggingface-hub": "huggingface_hub",
+        "python-dateutil": "dateutil",
+        "beautifulsoup4": "bs4",
+    }
+    canonical = re.sub(r"[-_.]+", "-", token.lower())
+    if canonical in alias:
+        return alias[canonical]
+
+    return token.replace("-", "_")
+
+def _build_custom_tool_import_lines(tool_code: str, extra_imports: list[str] | None = None) -> list[str]:
+    # 基础依赖（与历史行为兼容）
+    imports = [
+        "import numpy as np",
+        "import cv2",
+        "import math",
+        "import skimage",
+        "import scipy",
+    ]
+
+    detected = set()
+    code_text = str(tool_code or "")
+    detection_map = {
+        "torch": r"\btorch\b",
+        "torchvision": r"\btorchvision\b",
+        "transformers": r"\btransformers\b",
+        "diffusers": r"\bdiffusers\b",
+        "modelscope": r"\bmodelscope\b",
+        "huggingface_hub": r"\bhuggingface_hub\b",
+        "PIL": r"\bPIL\b",
+    }
+    for mod_name, pattern in detection_map.items():
+        if re.search(pattern, code_text):
+            detected.add(mod_name)
+
+    for imp in _normalize_import_list(extra_imports):
+        root = imp.split(".", maxsplit=1)[0].strip()
+        if root:
+            detected.add(imp.strip())
+
+    existing_roots = {
+        line.replace("import ", "").replace(" as np", "").strip().split(".", maxsplit=1)[0]
+        for line in imports
+    }
+    for mod_name in sorted(detected):
+        root = mod_name.split(".", maxsplit=1)[0]
+        if root in existing_roots:
+            continue
+        imports.append(f"import {mod_name}")
+        existing_roots.add(root)
+
+    return imports
+
+def save_tool_to_local(tool: dict, overwrite: bool = True, status_key: str | None = None):
+    if not isinstance(tool, dict):
+        raise ValueError("工具对象无效")
+    if not isinstance(tool.get("schema"), dict):
+        raise ValueError("工具 schema 无效")
+
+    tool_schema = dict(tool['schema'])
+    tool_code = str(tool.get('code') or "")
+    if not tool_code.strip():
+        raise ValueError("工具代码为空")
+
+    tool_name = global_registry.sanitize_tool_name(tool_schema.get('name', ''))
+    _, custom_tool_dir, file_base = global_registry.get_custom_tool_paths(tool_name)
+    custom_tool_dir.mkdir(parents=True, exist_ok=True)
+
+    tool_yaml = file_base.with_suffix(".yaml")
+    tool_py = file_base.with_suffix(".py")
+    if (not overwrite) and (tool_yaml.exists() or tool_py.exists()):
+        raise FileExistsError(f"工具 {tool_name} 已存在")
+
+    extra_imports = _normalize_import_list(tool.get("additional_imports"))
+    if not extra_imports:
+        extra_imports = _normalize_import_list(tool_schema.get("additional_imports"))
+
+    extra_packages = _normalize_import_list(tool.get("additional_packages"))
+    if not extra_packages:
+        extra_packages = _normalize_import_list(tool_schema.get("additional_packages"))
+    for package in extra_packages:
+        import_name = _package_to_import_name(package)
+        if import_name and import_name not in extra_imports:
+            extra_imports.append(import_name)
+
+    # 将附加导入信息一并持久化，便于后续审计与二次编辑
+    if extra_imports:
+        tool_schema["additional_imports"] = extra_imports
+    if extra_packages:
+        tool_schema["additional_packages"] = extra_packages
+
+    tool_yaml.write_text(
+        yaml.dump(tool_schema, allow_unicode=True, indent=2),
+        encoding='utf-8'
+    )
+
+    imports_text = "\n".join(_build_custom_tool_import_lines(tool_code, extra_imports))
+    tool_py.write_text(
+        f"{imports_text}\n\n{tool_code}",
+        encoding='utf-8'
+    )
+
+    succ, err = global_registry.load_custom_tool(tool_name)
+    if status_key:
+        st.session_state[status_key] = {
+            "ok": bool(succ),
+            "message": (
+                f"工具 {tool_name} 已保存并加载成功"
+                if succ else
+                f"工具 {tool_name} 已保存，但加载失败：{err}"
+            )
+        }
+
+def render_tool_save_button(
+    tool: dict,
+    button_label: str = "🆕 保存新工具",
+    button_key: str | None = None,
+    allow_overwrite: bool = True
+):
+    status_key = f"{button_key}_status" if button_key else None
+    if status_key and status_key in st.session_state:
+        status = st.session_state.pop(status_key)
+        if status.get("ok"):
+            st.success(status.get("message", "工具已保存"))
+        else:
+            st.warning(status.get("message", "工具保存后加载失败"))
+
+    if not isinstance(tool, dict):
+        st.button(button_label, disabled=True, key=button_key)
+        return
+    if not isinstance(tool.get("schema"), dict):
+        st.button(button_label, disabled=True, key=button_key)
+        return
+
+    raw_tool_name = tool["schema"].get("name")
+    if not raw_tool_name:
+        st.button(button_label, disabled=True, key=button_key)
+        return
+    try:
+        tool_name = global_registry.sanitize_tool_name(raw_tool_name)
+        _, _, file_name = global_registry.get_custom_tool_paths(tool_name)
+    except Exception as e:
+        st.button(button_label, disabled=True, key=button_key)
+        st.warning(f"工具名不合法，已阻止保存：{e}")
+        return
+
+    has_local_tool = file_name.with_suffix(".yaml").exists() and file_name.with_suffix(".py").exists()
+
+    if has_local_tool and allow_overwrite:
+        st.button(
+            "♻️ 覆盖保存工具",
+            on_click=save_tool_to_local,
+            args=[tool, True, status_key],
+            key=button_key
+        )
+        if tool_name not in global_registry.tools:
+            succ, err = global_registry.load_custom_tool(tool_name)
+            if not succ and err:
+                st.warning(f"本地工具加载失败：{tool_name}，错误：{err}")
+    elif has_local_tool:
+        st.button(button_label, disabled=True, key=button_key)
+        if tool_name not in global_registry.tools:
+            succ, err = global_registry.load_custom_tool(tool_name)
+            if not succ and err:
+                st.warning(f"本地工具加载失败：{tool_name}，错误：{err}")
+    else:
+        global_registry.dynamic_unregister(tool_name)
+        st.button(
+            button_label,
+            on_click=save_tool_to_local,
+            args=[tool, False, status_key],
+            key=button_key
+        )
+
+    tool_load_error = global_registry.last_custom_tool_errors.get(tool_name)
+    if tool_load_error:
+        st.warning(f"本地工具存在加载异常：{tool_name}，错误：{tool_load_error}")
+
 def _extract_wrapper_source(func: Callable) -> str:
     """
     从工具模块或类中提取指定函数的源代码，并格式化为静态方法
@@ -144,35 +357,11 @@ def render_message_content(msg, index: int):
                 st.button("📥 保存此版本", disabled=True)
             
             if "new_tool" in msg and msg["new_tool"]:
-                def save_tool(tool: dict):
-                    custom_tool_dir = get_executable_dir() / "tools/custom"
-                    custom_tool_dir.mkdir(parents=True, exist_ok=True)
-
-                    tool_schema = tool['schema']
-                    tool_code = tool['code']
-
-                    tool_name: str = tool_schema['name']
-
-                    (custom_tool_dir / tool_name).with_suffix(".yaml").write_text(
-                        yaml.dump(tool_schema, allow_unicode=True, indent=2), encoding='utf-8'
-                    )
-
-                    imports_text = "import numpy as np\nimport cv2\nimport math\nimport skimage\nimport scipy"
-
-                    (custom_tool_dir / tool_name).with_suffix(".py").write_text(
-                        f"{imports_text}\n\n{tool_code}", encoding='utf-8'
-                    )
-
-                tool_name = msg['new_tool']['schema']['name']
-                file_name = get_executable_dir() / f"tools/custom/{tool_name}"
-
-                if file_name.with_suffix(".yaml").exists() and file_name.with_suffix(".py").exists():
-                    st.button("🆕 保存新工具", disabled=True)
-                    if tool_name not in global_registry.tools:
-                        global_registry.load_custom_tool(tool_name)
-                else:
-                    global_registry.dynamic_unregister(tool_name)
-                    st.button("🆕 保存新工具", on_click=save_tool, args=[msg['new_tool']])
+                render_tool_save_button(
+                    msg["new_tool"],
+                    button_label="🆕 保存新工具",
+                    button_key=f"save_tool_chat_{index}"
+                )
 
             process_code = msg.get("process_code", "")
             best_params = msg.get("best_params", {})

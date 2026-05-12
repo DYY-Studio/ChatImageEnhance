@@ -4,6 +4,7 @@ import yaml
 import importlib.util
 import sys
 import logging
+import re
 
 from typing import Callable, Literal
 from utils import get_executable_dir
@@ -18,15 +19,70 @@ class ToolRegistry:
     """
     def __init__(self):
         self._tools = {}
+        self._last_custom_tool_errors: dict[str, str] = {}
+
+    @property
+    def last_custom_tool_errors(self):
+        return self._last_custom_tool_errors.copy()
+
+    @staticmethod
+    def sanitize_tool_name(name: str) -> str:
+        raw = str(name or "").strip()
+        if not raw:
+            raise ValueError("工具名不能为空")
+        if "/" in raw or "\\" in raw:
+            raise ValueError("工具名不能包含路径分隔符")
+        if raw != raw.strip(". "):
+            raise ValueError("工具名不能以点号或空格开头/结尾")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", raw):
+            raise ValueError("工具名必须是合法的 Python 标识符（字母/数字/下划线）")
+
+        reserved_names = {
+            "CON", "PRN", "AUX", "NUL",
+            *(f"COM{i}" for i in range(0, 10)),
+            *(f"LPT{i}" for i in range(0, 10))
+        }
+        if raw.upper() in reserved_names:
+            raise ValueError(f"工具名 {raw} 为系统保留名称")
+        return raw
+
+    @staticmethod
+    def get_custom_tool_paths(name: str):
+        safe_name = ToolRegistry.sanitize_tool_name(name)
+        custom_tool_dir = get_executable_dir() / "tools/custom"
+        base = custom_tool_dir / safe_name
+
+        custom_dir_resolved = custom_tool_dir.resolve()
+        base_resolved = base.resolve()
+        if base_resolved.parent != custom_dir_resolved:
+            raise ValueError("工具路径越界，已拒绝写入/读取")
+
+        return safe_name, custom_tool_dir, base
 
     def load_custom_tool(self, name: str):
-        tool_py = get_executable_dir() / f"tools/custom/{name}.py"
-        tool_yaml = get_executable_dir() / f"tools/custom/{name}.yaml"
+        try:
+            safe_name, _, base = ToolRegistry.get_custom_tool_paths(name)
+        except Exception as e:
+            self._last_custom_tool_errors[str(name)] = str(e)
+            logger.warning(f"Custom tool {name} invalid: {e}")
+            return False, str(e)
+
+        tool_py = base.with_suffix(".py")
+        tool_yaml = base.with_suffix(".yaml")
         if not tool_py.exists() or not tool_yaml.exists():
-            return
+            msg = f"工具文件缺失: {tool_py.name} 或 {tool_yaml.name}"
+            self._last_custom_tool_errors[safe_name] = msg
+            return False, msg
         
         try:
-            schema = yaml.load(tool_yaml.read_text('utf-8'), yaml.FullLoader)
+            schema = yaml.safe_load(tool_yaml.read_text('utf-8'))
+            if not isinstance(schema, dict):
+                raise ValueError("工具 Schema 必须是 JSON/YAML 对象")
+            schema_name = ToolRegistry.sanitize_tool_name(schema.get("name", ""))
+            if schema_name != safe_name:
+                raise ValueError(
+                    f"工具名不一致：文件名为 {safe_name}，Schema 名为 {schema_name}"
+                )
             module = ToolRegistry._load_tool_from_file(
                 f"dynamic_tools_{schema['name']}", str(tool_py.absolute())
             )
@@ -34,9 +90,13 @@ class ToolRegistry:
                 getattr(module, schema['name']),
                 schema
             )
+            self._last_custom_tool_errors.pop(safe_name, None)
             logger.info(f"Successfully load custom tool: {schema['name']}")
+            return True, None
         except Exception as e:
+            self._last_custom_tool_errors[safe_name] = str(e)
             logger.info(f"Custom tool {name} dynamic load failed: {e}")
+            return False, str(e)
 
     def load_custom_tools(self):
         custom_tool_dir = get_executable_dir() / "tools/custom"
@@ -88,7 +148,10 @@ class ToolRegistry:
 
     def dynamic_register(self, func: Callable, schema: dict, performance: str = 'unknown'):
         """动态注册LLM生成的算子"""
-        func_name = schema["name"]
+        func_name = ToolRegistry.sanitize_tool_name(schema["name"])
+        schema = dict(schema)
+        schema["name"] = func_name
+        schema["requires_learning"] = bool(schema.get("requires_learning", False))
         if performance != 'unknown':
             schema['cost'] = performance
         
@@ -101,7 +164,7 @@ class ToolRegistry:
     def dynamic_unregister(self, name: str) -> dict | None:
         """将动态注册算子注销/卸载"""
         if name in self._tools:
-            if self._tools['name'].get('is_dynamic', False):
+            if self._tools[name].get('is_dynamic', False):
                 return self._tools.pop(name)
         
         return None
@@ -143,21 +206,29 @@ class ToolRegistry:
             },
         }
 
-    def get_all_schemas_for_llm(self) -> str:
+    def get_all_schemas_for_llm(self, allow_learning: bool = True) -> str:
         """返回所有算子的规范说明（注入到 Prompt 中）"""
+        schemas = [
+            tool["schema"] for tool in self._tools.values()
+            if allow_learning or not bool(tool["schema"].get("requires_learning", False))
+        ]
         return yaml.dump(
-            [tool["schema"] for tool in self._tools.values()], 
+            schemas, 
             indent=2,
             allow_unicode=True
         )
     
-    def get_all_schemas_for_llm_short(self) -> str:
+    def get_all_schemas_for_llm_short(self, allow_learning: bool = True) -> str:
         """返回所有算子的规范说明（不带参数）（注入到 Prompt 中）"""
+        tool_list = [
+            tool for tool in self._tools.values()
+            if allow_learning or not bool(tool["schema"].get("requires_learning", False))
+        ]
         return yaml.dump(
             [{
                 "name": tool["schema"]["name"],
                 "description": tool["schema"]["description"],
-            } for tool in self._tools.values()], 
+            } for tool in tool_list], 
             indent=2,
             allow_unicode=True
         )
