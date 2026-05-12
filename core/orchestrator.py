@@ -3,6 +3,7 @@ import traceback
 import optuna
 import cv2
 import logging
+import re
 
 from agents.evaluator import EvaluatorAgent
 from agents.coder import CoderAgent
@@ -26,6 +27,7 @@ class Orchestrator:
         evaluator_agent: EvaluatorAgent, 
         toolmaker_agent: ToolMakerAgent,
         max_llm_retries: int = 3,
+        allow_learning_process: bool = True,
         process_device: str = "cpu",
         process_profile: str = "balanced",
         device_info: str = ""
@@ -41,7 +43,41 @@ class Orchestrator:
         self.evaluator_agent = evaluator_agent
         self.toolmaker_agent = toolmaker_agent
         self.max_llm_retries = max_llm_retries
+        self.allow_learning_process = bool(allow_learning_process)
         self.optimizer = None
+
+    @staticmethod
+    def _filter_learning_dependencies(
+        imports: Iterable[str] | None,
+        packages: Iterable[str] | None
+    ) -> tuple[list[str] | None, list[str] | None]:
+        blocked_import_roots = {"torch", "torchvision", "transformers", "diffusers", "modelscope", "huggingface_hub"}
+        blocked_package_roots = {
+            "torch", "torchvision", "transformers", "diffusers", "modelscope", "huggingface-hub", "huggingface_hub"
+        }
+
+        filtered_imports = None
+        if imports is not None:
+            filtered_imports = [
+                imp for imp in imports
+                if str(imp).strip()
+                and str(imp).strip().split(".", maxsplit=1)[0].lower() not in blocked_import_roots
+            ]
+
+        filtered_packages = None
+        if packages is not None:
+            def _pkg_root(value: str) -> str:
+                token = str(value).strip().split("[", maxsplit=1)[0].strip()
+                token = re.split(r"(==|!=|>=|<=|>|<|~=)", token, maxsplit=1)[0].strip()
+                return token.lower()
+
+            filtered_packages = [
+                pkg for pkg in packages
+                if str(pkg).strip()
+                and _pkg_root(str(pkg)) not in blocked_package_roots
+            ]
+
+        return filtered_imports, filtered_packages
 
     def verify_syntax(self, code_str: str):
         """语法验证"""
@@ -105,9 +141,16 @@ class Orchestrator:
         code_str = ""
         schema = {}
 
+        runtime_imports = additional_imports
+        runtime_packages = additional_packages
+        if not self.allow_learning_process:
+            runtime_imports, runtime_packages = self._filter_learning_dependencies(
+                additional_imports, additional_packages
+            )
+
         self.executor.extend_runtime(
-            additional_imports=additional_imports,
-            additional_packages=additional_packages
+            additional_imports=runtime_imports,
+            additional_packages=runtime_packages
         )
 
         for attempt in range(self.max_llm_retries):
