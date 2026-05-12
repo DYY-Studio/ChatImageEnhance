@@ -24,6 +24,12 @@ class CoderAgent(BaseAgent):
         reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None,
         low_res: bool = False,
         allow_learning: bool = True,
+        operator_preference: Literal[
+            "traditional_only",
+            "prefer_traditional",
+            "prefer_learning",
+            "learning_only"
+        ] = "prefer_traditional",
         additional_imports: list[str] | None = None,
         **kwargs
     ):
@@ -36,11 +42,17 @@ class CoderAgent(BaseAgent):
         """
         self.low_res = low_res
         self.allow_learning = bool(allow_learning)
+        self.operator_preference = self._normalize_operator_preference(
+            operator_preference, self.allow_learning
+        )
+        self.learning_enabled_for_code = (
+            self.allow_learning and self.operator_preference != "traditional_only"
+        )
         dynamic_imports = [
             str(imp).strip() for imp in (additional_imports or [])
             if str(imp).strip()
         ]
-        if not self.allow_learning:
+        if not self.learning_enabled_for_code:
             blocked_roots = {"torch", "torchvision", "transformers", "diffusers", "modelscope", "huggingface_hub"}
             dynamic_imports = [
                 imp for imp in dynamic_imports
@@ -57,11 +69,103 @@ class CoderAgent(BaseAgent):
     def rebuild_system_prompt(self):
         self.system_prompt = self._build_system_prompt()
 
+    @staticmethod
+    def _normalize_operator_preference(
+        value: str,
+        allow_learning: bool
+    ) -> Literal["traditional_only", "prefer_traditional", "prefer_learning", "learning_only"]:
+        mode = str(value or "").strip().lower()
+        alias = {
+            "traditional_only": "traditional_only",
+            "only_traditional": "traditional_only",
+            "traditional": "traditional_only",
+            "仅传统": "traditional_only",
+            "prefer_traditional": "prefer_traditional",
+            "traditional_preferred": "prefer_traditional",
+            "偏好传统": "prefer_traditional",
+            "prefer_learning": "prefer_learning",
+            "prefer_deep_learning": "prefer_learning",
+            "偏好深度学习": "prefer_learning",
+            "learning_only": "learning_only",
+            "only_learning": "learning_only",
+            "deep_learning_only": "learning_only",
+            "only_deep_learning": "learning_only",
+            "仅深度学习": "learning_only",
+        }
+        normalized = alias.get(mode, "prefer_traditional")
+        if not allow_learning:
+            return "traditional_only"
+        return normalized
+
+    def _schema_filter_mode(self) -> Literal["all", "traditional_only", "learning_only"]:
+        if self.operator_preference == "traditional_only":
+            return "traditional_only"
+        if self.operator_preference == "learning_only":
+            return "learning_only"
+        return "all"
+
     def _build_system_prompt(self) -> str:
         """
         构建专属系统提示词，明确代码生成的硬性规则和格式要求
         核心原则：让LLM生成可直接被Optuna调用、容错性强的process函数
         """
+
+        schema_filter_mode = self._schema_filter_mode()
+        schema_list = global_registry.get_schemas_for_llm(
+            allow_learning=self.allow_learning,
+            learning_mode=schema_filter_mode
+        )
+        schema_dump = global_registry.get_all_schemas_for_llm(
+            allow_learning=self.allow_learning,
+            learning_mode=schema_filter_mode
+        )
+
+        preference_guidance_map = {
+            "traditional_only": "仅传统：你只能使用传统算子，禁止使用深度学习算子。",
+            "prefer_traditional": "偏好传统：优先尝试传统算子；当传统方案明显不足时，再使用深度学习算子。",
+            "prefer_learning": "偏好深度学习：优先尝试深度学习算子；若传统算子更稳定或更低成本，也可混合/回退。",
+            "learning_only": "仅深度学习：你只能使用深度学习算子，禁止使用传统算子。"
+        }
+        preference_guidance = preference_guidance_map.get(
+            self.operator_preference, preference_guidance_map["prefer_traditional"]
+        )
+
+        if self.learning_enabled_for_code:
+            learning_libraries_text = (
+                "`torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`, "
+                f"{self.additional_imports if self.additional_imports else '（无额外模块）'}"
+            )
+            learning_switch_status = "启用"
+            learning_switch_policy = (
+                "允许使用深度学习算子，但必须遵守本地模型优先与显存回落规则。"
+                if self.operator_preference != "learning_only"
+                else "当前为仅深度学习模式，禁止使用传统算子。必须基于深度学习算子完成流程，并遵守本地模型优先与显存回落规则。"
+            )
+        else:
+            learning_libraries_text = (
+                "当前会话已禁用深度学习处理，严禁使用 `torch` / `torchvision` / "
+                "`transformers` / `diffusers` / `modelscope` 及任何需要下载/加载深度模型的模块。"
+            )
+            learning_switch_status = "禁用"
+            learning_switch_policy = (
+                "禁止生成任何需要深度学习推理/模型权重加载的处理流程。若需求必须依赖深度学习，请输出 NEED_NEW_TOOL 并在 description 明确“当前深度学习已禁用，无法执行”。"
+            )
+
+        schema_filter_notice_map = {
+            "traditional_only": "Schema 已按“仅传统”过滤，仅包含传统算子。",
+            "learning_only": "Schema 已按“仅深度学习”过滤，仅包含深度学习算子。",
+            "all": "Schema 未过滤，包含传统+深度学习算子。"
+        }
+        schema_filter_notice = schema_filter_notice_map.get(schema_filter_mode, schema_filter_notice_map["all"])
+        schema_empty_guard = ""
+        if schema_filter_mode in ("traditional_only", "learning_only") and not schema_list:
+            desired = "传统算子" if schema_filter_mode == "traditional_only" else "深度学习算子"
+            schema_empty_guard = (
+                f"当前偏好过滤后没有任何可用{desired}。你必须直接输出 `NEED_NEW_TOOL` JSON，"
+                "并在 description 里明确“当前偏好过滤后可用算子为空”。"
+            )
+        elif schema_filter_mode in ("traditional_only", "learning_only"):
+            schema_empty_guard = "仅档位过滤后仍有可用算子，必须严格在该集合内选型。"
 
         # 从全局注册表中提取所有CV算子的Schema（供LLM参考可用函数）
         prompt = f"""
@@ -91,22 +195,14 @@ class CoderAgent(BaseAgent):
 * **库访问**：你只能使用下列库：
     - 基础处理: `np` (numpy), `cv2` (opencv-contrib-python), `optuna`, `skimage` (scikit-image), `PIL` (pillow) 以及提供的算子库 `cv_wrappers`
     - 深度学习:
-      {
-        (
-            "`torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`, "
-            f"{self.additional_imports if self.additional_imports else '（无额外模块）'}"
-        ) if self.allow_learning else "当前会话已禁用深度学习处理，严禁使用 `torch` / `torchvision` / `transformers` / `diffusers` / `modelscope` 及任何需要下载/加载深度模型的模块。"
-      }
+      {learning_libraries_text}
 * **算子调用**：所有算子必须通过 `cv_wrappers.算子名(img, **params)` 的形式调用
 * **纯净性**：函数内不要导入模块，不要使用 `import`, `__import__` 语句，不要定义全局变量
 * **辅助函数**：允许编写辅助函数简化过程、提高可读性，辅助函数必须嵌套在process函数中
 * **单例模式**: 代码会被多次执行，只需要加载一次的内容必须放置在 `cache` 字典中
 * **本地模型优先**: 若调用深度学习算子且其参数包含 `model_dir`，必须优先透传该本地目录，不要在 `process` 中构造联网下载逻辑
-* **深度学习开关**: 当前会话{
-    "启用" if self.allow_learning else "禁用"
-}深度学习处理。{
-    "允许使用深度学习算子，但必须遵守本地模型优先与显存回落规则。" if self.allow_learning else "禁止生成任何需要深度学习推理/模型权重加载的处理流程。若需求必须依赖深度学习，请输出 NEED_NEW_TOOL 并在 description 明确“当前深度学习已禁用，无法执行”。"
-}
+* **深度学习开关**: 当前会话{learning_switch_status}深度学习处理。{learning_switch_policy}
+* **算子偏好**: {preference_guidance}
 * **运行时信息读取**: 可从 `cache.get("__runtime__", {{}})` 读取运行时偏好：
     - `preferred_device`: 用户选择的处理设备（如 `cuda` / `mps` / `cpu`）
     - `performance_profile`: 用户选择的性能档位（`fast` / `balanced` / `low_memory`）
@@ -131,7 +227,9 @@ class CoderAgent(BaseAgent):
 }
 
 ### Provided Schema / 算子库文档
-{global_registry.get_all_schemas_for_llm(allow_learning=self.allow_learning)}
+{schema_filter_notice}
+{schema_empty_guard}
+{schema_dump}
 
 ### Output Format / 输出格式要求
 #### 格式 A：输出处理代码 (情况 A)

@@ -70,6 +70,8 @@ if 'device_learning_process' not in st.session_state:
     st.session_state['device_learning_process'] = "cpu"
 if 'process_profile' not in st.session_state:
     st.session_state['process_profile'] = "balanced"
+if 'process_operator_preference' not in st.session_state:
+    st.session_state['process_operator_preference'] = "prefer_traditional"
 if 'img_bgr' not in st.session_state:
     st.session_state['img_bgr'] = None
 if 'running' not in st.session_state:
@@ -90,6 +92,58 @@ def get_cv2_inter_mapping() -> dict[int, str]:
 @st.cache_resource
 def get_model_cache():
     return dict()
+
+PROCESS_OPERATOR_PREFERENCES = [
+    "traditional_only",
+    "prefer_traditional",
+    "prefer_learning",
+    "learning_only"
+]
+
+PROCESS_OPERATOR_PREFERENCE_LABELS = {
+    "traditional_only": "仅传统",
+    "prefer_traditional": "偏好传统",
+    "prefer_learning": "偏好深度学习",
+    "learning_only": "仅深度学习",
+}
+
+def normalize_process_operator_preference(
+    value: str | None,
+    allow_learning_process: bool
+) -> str:
+    mode = str(value or "").strip().lower()
+    alias = {
+        "traditional_only": "traditional_only",
+        "only_traditional": "traditional_only",
+        "traditional": "traditional_only",
+        "仅传统": "traditional_only",
+        "prefer_traditional": "prefer_traditional",
+        "traditional_preferred": "prefer_traditional",
+        "偏好传统": "prefer_traditional",
+        "prefer_learning": "prefer_learning",
+        "prefer_deep_learning": "prefer_learning",
+        "偏好深度学习": "prefer_learning",
+        "learning_only": "learning_only",
+        "only_learning": "learning_only",
+        "only_deep_learning": "learning_only",
+        "deep_learning_only": "learning_only",
+        "仅深度学习": "learning_only",
+    }
+    normalized = alias.get(mode, "prefer_traditional")
+    if not allow_learning_process:
+        return "traditional_only"
+    return normalized
+
+def get_process_operator_preference_label(value: str) -> str:
+    return PROCESS_OPERATOR_PREFERENCE_LABELS.get(value, value)
+
+def get_allowed_search_sources(
+    allow_learning_process: bool,
+    operator_preference: str
+) -> tuple[str, ...]:
+    if (not allow_learning_process) or operator_preference == "traditional_only":
+        return ("github",)
+    return ("github", "huggingface", "modelscope")
 
 with st.sidebar:
     st.header("设置")
@@ -116,6 +170,18 @@ with st.sidebar:
                             "low_memory": "低占用"
                         }.get(x, x),
                         help="用于高显存参数（如 tile_size）的默认倾向。实际回落由运行时自动完成。"
+                    )
+                    current_process_operator_preference = normalize_process_operator_preference(
+                        st.session_state.get("process_operator_preference"),
+                        True
+                    )
+                    st.selectbox(
+                        "处理算子偏好",
+                        PROCESS_OPERATOR_PREFERENCES,
+                        index=PROCESS_OPERATOR_PREFERENCES.index(current_process_operator_preference),
+                        key='process_operator_preference',
+                        format_func=get_process_operator_preference_label,
+                        help="仅档位会在Schema注入前过滤算子；偏好档位会保留全量算子并在提示词中表达偏好。"
                     )
         else:
             st.session_state['enable_learning_evaluator'] = False
@@ -280,6 +346,10 @@ with st.sidebar:
 
 def get_orchestrator():
     allow_learning_process = bool(st.session_state.get("enable_learning_process", False))
+    process_operator_preference = normalize_process_operator_preference(
+        st.session_state.get("process_operator_preference"),
+        allow_learning_process
+    )
     process_device = (
         st.session_state.get('device_learning_process', 'cpu')
         if allow_learning_process else 'cpu'
@@ -287,6 +357,9 @@ def get_orchestrator():
     process_profile = (
         st.session_state.get('process_profile', 'balanced')
         if allow_learning_process else 'balanced'
+    )
+    toolmaker_allow_learning = (
+        allow_learning_process and process_operator_preference != "traditional_only"
     )
     device_info_text = format_device_info_for_prompt(get_device_info_subprocess())
 
@@ -296,7 +369,8 @@ def get_orchestrator():
             client, selected_model, 
             reasoning_effort=st.session_state.reasoning_effort, 
             low_res=low_res_process,
-            allow_learning=allow_learning_process
+            allow_learning=allow_learning_process,
+            operator_preference=process_operator_preference
         ),
         EvaluatorAgent(
             client, selected_model, 
@@ -306,7 +380,7 @@ def get_orchestrator():
         ToolMakerAgent(
             client, selected_model,
             reasoning_effort=st.session_state.reasoning_effort,
-            allow_learning=allow_learning_process
+            allow_learning=toolmaker_allow_learning
         ),
         allow_learning_process=allow_learning_process,
         process_device=process_device,
@@ -317,6 +391,10 @@ def get_orchestrator():
 
 if st.session_state.ui_scene in ("ToolMaker", "Chat"):
     allow_learning_process = bool(st.session_state.get("enable_learning_process", False))
+    process_operator_preference = normalize_process_operator_preference(
+        st.session_state.get("process_operator_preference"),
+        allow_learning_process
+    )
     process_device = (
         st.session_state.get('device_learning_process', 'cpu')
         if allow_learning_process else 'cpu'
@@ -329,6 +407,7 @@ if st.session_state.ui_scene in ("ToolMaker", "Chat"):
     runtime_hint = f"""
 --- 运行时约束 ---
 深度学习处理: {'enabled' if allow_learning_process else 'disabled'}
+处理算子偏好: {get_process_operator_preference_label(process_operator_preference)}
 处理设备偏好: {process_device}
 性能档位偏好: {process_profile}
 设备信息:
@@ -586,10 +665,13 @@ if user_feedback:
                                 tool_status.update(state='running')
                                 if search_container:
                                     allow_learning_process = bool(st.session_state.get("enable_learning_process", False))
-                                    allowed_search_sources = (
-                                        ("github", "huggingface", "modelscope")
-                                        if allow_learning_process else
-                                        ("github",)
+                                    process_operator_preference = normalize_process_operator_preference(
+                                        st.session_state.get("process_operator_preference"),
+                                        allow_learning_process
+                                    )
+                                    allowed_search_sources = get_allowed_search_sources(
+                                        allow_learning_process,
+                                        process_operator_preference
                                     )
                                     searcher = Searcher(
                                         client, selected_model,

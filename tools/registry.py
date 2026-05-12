@@ -26,6 +26,35 @@ class ToolRegistry:
         return self._last_custom_tool_errors.copy()
 
     @staticmethod
+    def _normalize_schema_filter_mode(
+        allow_learning: bool = True,
+        learning_mode: str | None = None
+    ) -> Literal["all", "traditional_only", "learning_only"]:
+        if learning_mode is None:
+            return "all" if allow_learning else "traditional_only"
+
+        mode = str(learning_mode).strip().lower()
+        alias = {
+            "all": "all",
+            "both": "all",
+            "traditional_only": "traditional_only",
+            "only_traditional": "traditional_only",
+            "traditional": "traditional_only",
+            "learning_only": "learning_only",
+            "only_learning": "learning_only",
+            "only_deep_learning": "learning_only",
+            "deep_learning_only": "learning_only",
+            "deep_only": "learning_only",
+        }
+        if mode not in alias:
+            logger.warning(f"未知 schema 过滤模式: {learning_mode}，回落到 all")
+            return "all"
+        normalized = alias[mode]
+        if not allow_learning:
+            return "traditional_only"
+        return normalized
+
+    @staticmethod
     def sanitize_tool_name(name: str) -> str:
         raw = str(name or "").strip()
         if not raw:
@@ -206,24 +235,60 @@ class ToolRegistry:
             },
         }
 
-    def get_all_schemas_for_llm(self, allow_learning: bool = True) -> str:
-        """返回所有算子的规范说明（注入到 Prompt 中）"""
-        schemas = [
-            tool["schema"] for tool in self._tools.values()
-            if allow_learning or not bool(tool["schema"].get("requires_learning", False))
+    def _filter_tools_for_llm(
+        self,
+        allow_learning: bool = True,
+        learning_mode: str | None = None
+    ) -> list[dict]:
+        mode = self._normalize_schema_filter_mode(allow_learning, learning_mode)
+        filtered = []
+        for tool in self._tools.values():
+            requires_learning = bool(tool["schema"].get("requires_learning", False))
+            if mode == "traditional_only" and requires_learning:
+                continue
+            if mode == "learning_only" and not requires_learning:
+                continue
+            filtered.append(tool)
+        return filtered
+
+    def get_schemas_for_llm(
+        self,
+        allow_learning: bool = True,
+        learning_mode: str | None = None
+    ) -> list[dict]:
+        return [
+            tool["schema"] for tool in self._filter_tools_for_llm(
+                allow_learning=allow_learning,
+                learning_mode=learning_mode
+            )
         ]
+
+    def get_all_schemas_for_llm(
+        self,
+        allow_learning: bool = True,
+        learning_mode: str | None = None
+    ) -> str:
+        """返回所有算子的规范说明（注入到 Prompt 中）"""
+        schemas = self.get_schemas_for_llm(
+            allow_learning=allow_learning,
+            learning_mode=learning_mode
+        )
         return yaml.dump(
             schemas, 
             indent=2,
             allow_unicode=True
         )
     
-    def get_all_schemas_for_llm_short(self, allow_learning: bool = True) -> str:
+    def get_all_schemas_for_llm_short(
+        self,
+        allow_learning: bool = True,
+        learning_mode: str | None = None
+    ) -> str:
         """返回所有算子的规范说明（不带参数）（注入到 Prompt 中）"""
-        tool_list = [
-            tool for tool in self._tools.values()
-            if allow_learning or not bool(tool["schema"].get("requires_learning", False))
-        ]
+        tool_list = self._filter_tools_for_llm(
+            allow_learning=allow_learning,
+            learning_mode=learning_mode
+        )
         return yaml.dump(
             [{
                 "name": tool["schema"]["name"],
