@@ -4,8 +4,6 @@ import yaml
 import numpy as np
 import math
 import torch
-import open_clip
-import lpips
 
 from PIL import Image
 from skimage.metrics import structural_similarity as ssim
@@ -307,6 +305,7 @@ class Evaluator:
     # =========================
 
     def _load_lpips(self, net: str = 'alex'):
+        import lpips
         cache_key = f"lpips_{net}_{self.device}"
         # 懒加载：仅在第一次调用此网络时实例化
         if cache_key not in self.model_cache:
@@ -339,13 +338,14 @@ class Evaluator:
         pretrained: str = 'laion2b_s34b_b79k',
         tokenizer: bool = True,
     ):
+        import open_clip
         cache_key = f"{cache_prefix}_{model_name}_{pretrained}_{self.device}"
         
         # 懒加载：将 model, preprocess 和 tokenizer 打包缓存
         if cache_key not in self.model_cache:
             model, _, preprocess = open_clip.create_model_and_transforms(
                 model_name, pretrained=pretrained, device=self.device,
-                cache_dir=str(get_executable_dir() / 'models/clip')
+                cache_dir=str(get_executable_dir() / 'caches/model_assets/huggingface')
             )
             tokenizer = open_clip.get_tokenizer(model_name) if tokenizer else None
 
