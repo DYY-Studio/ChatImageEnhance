@@ -12,6 +12,7 @@ class ToolMakerAgent(BaseAgent):
         model_name: str = "gpt-4o-mini",
         temperature: float = 0.1,
         reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None,
+        allow_learning: bool = True,
         additional_imports: list[str] | None = None,
         **kwargs
     ):
@@ -23,7 +24,18 @@ class ToolMakerAgent(BaseAgent):
         :param temperature: 生成温度，低温度保证代码逻辑稳定性（0.0-0.2为宜）
         """
         # 构造CoderAgent专属的系统提示词，明确代码生成规则
-        self.additional_imports = additional_imports
+        self.allow_learning = bool(allow_learning)
+        dynamic_imports = [
+            str(imp).strip() for imp in (additional_imports or [])
+            if str(imp).strip()
+        ]
+        if not self.allow_learning:
+            blocked_roots = {"torch", "torchvision", "transformers", "diffusers", "modelscope", "huggingface_hub"}
+            dynamic_imports = [
+                imp for imp in dynamic_imports
+                if imp.split(".", maxsplit=1)[0].strip().lower() not in blocked_roots
+            ]
+        self.additional_imports = dynamic_imports
         system_prompt = self._build_system_prompt()
         # 调用父类初始化（LLM客户端、模型名、系统提示词、温度）
         super().__init__(llm_client, model_name, system_prompt, temperature, reasoning_effort, **kwargs)
@@ -50,9 +62,10 @@ class ToolMakerAgent(BaseAgent):
 ## 1. 允许使用的环境与库
 - 你**只能**使用当前上下文中存在的以下库：
     - `numpy` (作为 `np`), `cv2` (opencv-contrib-python), `skimage` (scikit-image), `math`, `PIL` (pillow)。
-    - `torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`, $DYNAMIC_IMPORTS$
+    - $LEARNING_LIBS$
 - **绝对禁止**在输出的代码中使用 `import`, `__import__` 语句。你不能导入任何其他标准库（如 `os`, `sys`, `subprocess` 等）或第三方库。
 - **绝对禁止**使用 `exec`, `eval`, `open`, 以及任何带有文件系统或网络访问性质的代码。
+- $LEARNING_POLICY$
 - 如果检索结果中提供了“本地下载目录/已下载文件”，深度学习模型必须优先从本地目录加载，禁止在推理时隐式联网下载。
 - 当接口支持时（如 `from_pretrained`/部分 `pipeline`），必须显式传入 `local_files_only=True` 并使用本地目录路径。
 
@@ -150,6 +163,26 @@ class ToolMakerAgent(BaseAgent):
                 ', '.join(self.additional_imports) 
                 if self.additional_imports is not None and self.additional_imports 
                 else ''
+            ),
+            1
+        ).replace(
+            "$LEARNING_LIBS$",
+            (
+                "`torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`, "
+                + (
+                    ', '.join(self.additional_imports)
+                    if self.additional_imports is not None and self.additional_imports
+                    else "（无额外模块）"
+                )
+            ) if self.allow_learning else
+            "当前会话已禁用深度学习处理，禁止使用 `torch` / `torchvision` / `transformers` / `diffusers` / `modelscope` 及任何模型推理链路。",
+            1
+        ).replace(
+            "$LEARNING_POLICY$",
+            (
+                "当前会话允许深度学习工具。若使用模型推理，必须显式暴露 `device` / `model_dir` 并实现 OOM 回落。"
+                if self.allow_learning else
+                "当前会话禁用深度学习工具。你必须仅实现传统图像处理算法，不得生成任何依赖模型权重的代码。"
             ),
             1
         )
