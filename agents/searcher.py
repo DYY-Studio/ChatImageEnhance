@@ -47,7 +47,7 @@ class SearcherAgent(BaseAgent):
             } if modelscope_token is not None and modelscope_token else {}
         )
         self.modelscope_hubapi = HubApi(token=modelscope_token)
-        self.hf_api = HfApi("https://hf-mirror.com", token=huggingface_token)
+        self.hf_api = HfApi(token=huggingface_token if huggingface_token is not None and huggingface_token else None)
         if github_client is not None:
             github_client.per_page = 10
         self.curr_repo = None
@@ -338,7 +338,7 @@ submit_findings(
     - 确保包含了必要的`import`语句
   - `dependencies`: (仅人工智能) 包名，用于从`pypi`安装，以空格分隔，不要传入其他内容。
   - `source`: 这个项目来自哪个源，可以填写`github`, `huggingface`或`modelscope`
-  - `require_files`: (仅 HuggingFace 和 ModelScope) 需要下载的文件的路径列表（如权重文件等），为空表示下载整个仓库
+  - `require_files`: (仅 HuggingFace 和 ModelScope) 需要下载的文件路径列表（如权重、配置、tokenizer、processor）。无法确定时允许留空（留空会触发快照下载）。
 * 失败时不需要传入任何params，（可选）或可以传入`summary`解释原因。
 
 # Workflow (Drill-Down 策略)
@@ -358,15 +358,17 @@ submit_findings(
    - 下一步调用哪个工具？为什么？
    - 该代码/模型实现该功能的核心逻辑是什么？相比其他搜索结果有何优劣？
    - (可选) 尽可能精简的其他必要的跨步骤知识
-2. **过滤噪音:** 绝对不要进入或读取 `tests/`, `docs/`, `assets/`, `.git/`, 模型权重文件（如 `.bin`, `.safetensors`）或配置文件。只关注核心源码和 README。
+2. **过滤噪音:** 绝对不要进入或读取 `tests/`, `docs/`, `assets/`, `.git/`、示例图片/视频等无关内容。  
+   对于模型仓库，你可以查看文件树、README、推理脚本以及小型配置文件（如 `config.json`, `tokenizer_config.json`）来确定最小下载清单；不要读取大型权重文件内容本体。
 3. **步数限制:** 你的探索必须高效。如果连续在 5 个不同的文件中都没有找到核心逻辑，必须立即放弃该仓库，去查看下一个仓库。
 4. **切勿生造代码:** 你的任务是“寻找和搬运”，**绝对不要**杜撰不存在的模型调用 API 或算法逻辑。如果没找到，直接提交“未找到”。
 5. **动态审查依赖:** 
    - 对于 **GitHub 传统算法**：务必注意代码是否可以仅使用 `numpy`, `cv2` (opencv-contrib-python), `skimage`, `math`, `PIL` 实现。
    - 对于 **Hugging Face / ModelScope 模型**：环境已经预装常用依赖 `torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`。如果有其他必要的依赖，在 `submit_findings` 时必须准确列出。
 6. **跨语言参考 (仅限GitHub):** 当且仅当多次尝试无法找到Python实现时，允许对其他语言的代码进行总结提炼，提交转写后的伪代码或Python代码。
-7. **错误处理:** 遇到网络或 API 错误等无法修复的问题，直接提交“未找到”，并在 `summary` 字段说明。
-8. **见好就收:** 如果寻找多个目标后仍有部分功能无法实现，选择能实现最多功能的进行提交，不要因贪心超出步数限制。
+7. **最小下载优先:** 对于 HuggingFace / ModelScope，优先提交最小 `require_files`，避免整仓下载。常见必需文件包括：权重文件、配置文件、tokenizer/processor 文件、推理必须脚本。
+8. **错误处理:** 遇到网络或 API 错误等无法修复的问题，直接提交“未找到”，并在 `summary` 字段说明。
+9. **见好就收:** 如果寻找多个目标后仍有部分功能无法实现，选择能实现最多功能的进行提交，不要因贪心超出步数限制。
 
 # Search Guidance
 
@@ -410,8 +412,8 @@ submit_findings(
 每一次回复，你必须输出使用Markdown包裹的严格的JSON格式，包含下列三个字段：
 ```json
 {
-    "think": "目标是寻找图片卡通化代码。我已经看了 Top 1 仓库 `cartoon-engine` 的 README，确认它符合要求。它根目录下有一个 `src/` 文件夹。我接下来需要调用 `list_directory` 查看 `src/` 里面的内容，寻找类似 `process.py` 或 `filter.py` 的文件。"
-    "tool": "list_dirctory",
+    "think": "目标是寻找图片卡通化代码。我已经看了 Top 1 仓库 `cartoon-engine` 的 README，确认它符合要求。它根目录下有一个 `src/` 文件夹。我接下来需要调用 `list_directory` 查看 `src/` 里面的内容，寻找类似 `process.py` 或 `filter.py` 的文件。",
+    "tool": "list_directory_github",
     "params": {
         "repo_name": "example/cartoon-engine",
         "path": "src"

@@ -75,13 +75,20 @@ class CoderAgent(BaseAgent):
         - 例如：`ksize_median = trial.suggest_categorical("Median_Denoise_ksize", [3, 5, 7])`
     - 情况 B (不需要)：必须使用 **常数** 设置参数
         - 例如：`adjust_sigmoid_cutoff = 0.5`
+    - **禁止调优的参数类型**：`cache`、`device`、`model_dir`、字符串路径、模型ID等运行时/环境参数，必须使用常量或直接透传，不得 `trial.suggest_*`
 * **库访问**：你只能使用下列库：
     - 基础处理: `np` (numpy), `cv2` (opencv-contrib-python), `optuna`, `skimage` (scikit-image), `PIL` (pillow) 以及提供的算子库 `cv_wrappers`
     - 深度学习: `torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`, {self.additional_imports}
 * **算子调用**：所有算子必须通过 `cv_wrappers.算子名(img, **params)` 的形式调用
-* **纯净性**：函数内不要包含 `import` 语句，不要定义全局变量
+* **纯净性**：函数内不要导入模块，不要使用 `import`, `__import__` 语句，不要定义全局变量
 * **辅助函数**：允许编写辅助函数简化过程、提高可读性，辅助函数必须嵌套在process函数中
 * **单例模式**: 代码会被多次执行，只需要加载一次的内容必须放置在 `cache` 字典中
+* **本地模型优先**: 若调用深度学习算子且其参数包含 `model_dir`，必须优先透传该本地目录，不要在 `process` 中构造联网下载逻辑
+* **运行时信息读取**: 可从 `cache.get("__runtime__", {{}})` 读取运行时偏好：
+    - `preferred_device`: 用户选择的处理设备（如 `cuda` / `mps` / `cpu`）
+    - `performance_profile`: 用户选择的性能档位（`fast` / `balanced` / `low_memory`）
+    - `device_info`: 系统设备信息摘要
+* **显存回落兼容**: 若调用高显存占用算子（如含 `tile_size` / `patch_size` / `batch_size` 参数），必须优先把这些参数显式暴露并传给算子，避免写死在函数内部，便于运行时自动回落机制接管。
 
 ### Strategy & Best Practices / 策略建议
 * **命名规范**：在 `trial.suggest` 中使用 `"{{算子名}}_{{参数名}}"` 的命名方式，防止参数冲突。

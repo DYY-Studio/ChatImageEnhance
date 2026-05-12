@@ -51,8 +51,10 @@ class ToolMakerAgent(BaseAgent):
 - 你**只能**使用当前上下文中存在的以下库：
     - `numpy` (作为 `np`), `cv2` (opencv-contrib-python), `skimage` (scikit-image), `math`, `PIL` (pillow)。
     - `torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`, $DYNAMIC_IMPORTS$
-- **绝对禁止**在输出的代码中使用 `import` 语句。你不能导入任何其他标准库（如 `os`, `sys`, `subprocess` 等）或第三方库。
+- **绝对禁止**在输出的代码中使用 `import`, `__import__` 语句。你不能导入任何其他标准库（如 `os`, `sys`, `subprocess` 等）或第三方库。
 - **绝对禁止**使用 `exec`, `eval`, `open`, 以及任何带有文件系统或网络访问性质的代码。
+- 如果检索结果中提供了“本地下载目录/已下载文件”，深度学习模型必须优先从本地目录加载，禁止在推理时隐式联网下载。
+- 当接口支持时（如 `from_pretrained`/部分 `pipeline`），必须显式传入 `local_files_only=True` 并使用本地目录路径。
 
 ## 2. 算子签名与规范
 * 函数名必须以 `safe_` 开头，例如：`def safe_cyberpunk_filter(...)`
@@ -63,6 +65,10 @@ class ToolMakerAgent(BaseAgent):
   - 仅允许缓存模型实例（如 nn.Module, Pipeline）、分词器（Tokenizer）、处理器（Processor）等关键实例。**严禁** 将任何图像数据、Tensor 张量等中间结果放入 cache。
   - 在将模型存入 cache 前，必须显式地将其 .to(device)，以确保后续调用时设备匹配。
 * 深度学习推理算子必须暴露 `device: str = 'cpu'` 和其他关键参数（如`tile_size`）为入参，并赋予合理的默认值。`device`必须要有确认和回落到`cpu`的逻辑。
+* 若使用外部模型文件，必须暴露 `model_dir: str = ''` 入参，并优先使用调用方提供的本地目录。
+* 若算子含高显存参数（例如 `tile_size`、`patch_size`、`batch_size`、`chunk_size`），必须显式暴露这些参数，不得隐藏在函数体中。
+* 可使用 `runtime = cache.get("__runtime__", {})` 读取运行时偏好（`preferred_device`、`performance_profile`、`device_info`），并据此设置默认策略。
+* 必须实现 OOM 自动回落：捕获显存不足异常后，自动降低高显存参数并在 `cache` 中记录可用参数（例如 `cache['<tool>_fallback']`），后续调用优先复用。
 * 必须将可以调节的变量（如强度、阈值、卷积核大小）暴露为函数的入参，并赋予合理的默认值。
 * 函数的返回值**必须**是处理后的图像：`np.ndarray`。
 
@@ -90,22 +96,28 @@ class ToolMakerAgent(BaseAgent):
     "name": "函数名称，必须与代码中的 def 名称一致",
     "description": "一句话解释该算子的作用以及适用场景",
     "parameters": {
-      // 不要把 img 包含在 parameters 中
       "参数1": {
         "type": "float/int/bool/str",
-        "range": [最小值, 最大值], // 或 "options": [可选参数1, 可选参数2, 可选参数3]
+        "range": [最小值, 最大值],
         "description": "解释该参数的作用，以及值变大变小会带来什么影响"
       },
-      // 如果需要单例模式缓存，cache 也需要暴露在 Schema 中
-      "cache" : { 
+      "参数2": {
+        "type": "float/int/bool/str",
+        "options": ["可选参数1", "可选参数2"],
+        "description": "非连续参数使用 options"
+      },
+      "cache": {
         "type": "dict",
         "description": "单例模式使用的缓存字典"
       },
-      // 如果需要使用深度学习模型，必须暴露 device
       "device": {
-        "type": "str"
-        // device 不需要 range 或 options 字段
+        "type": "str",
+        "description": "推理设备，如 cpu/cuda/mps/xpu/npu"
       },
+      "model_dir": {
+        "type": "str",
+        "description": "本地模型目录（由外部传入）"
+      }
     }
   }
 }

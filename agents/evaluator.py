@@ -58,8 +58,8 @@ class EvaluatorAgent(BaseAgent):
    - `vision_metrics.compare_brisque(img)`: 综合自然图像质量评分 (注意：已在底层取反处理)，**>0 视觉观感更好，<0 伪影增多**。强大的全局质量**奖励项**，能够有效防止图像修改过度。
 {}
 # CRITICAL RULES
-1. **意图翻译** (Extract & Translate)：提取用户的核心需求，映射为1个或多个 **主奖励项**（例如：要求“更清晰” -> 奖励 `compare_shapness`）。
-2. **防范奖励黑客 (Prevent Reward Hacking):** Optuna 极其聪明，如果你只奖励清晰度，它会将图像锐化成全是白噪点。你**必须**使用多维度加权，并引入惩罚机制（Penalty）。例如，锐化必定带来噪点，因此奖励 `compare_shapness` 的同时，必须适度惩罚 `compare_tv` 的上升，并严厉惩罚 `compare_clipping`。
+1. **意图翻译** (Extract & Translate)：提取用户的核心需求，映射为1个或多个 **主奖励项**（例如：要求“更清晰” -> 奖励 `compare_sharpness`）。
+2. **防范奖励黑客 (Prevent Reward Hacking):** Optuna 极其聪明，如果你只奖励清晰度，它会将图像锐化成全是白噪点。你**必须**使用多维度加权，并引入惩罚机制（Penalty）。例如，锐化必定带来噪点，因此奖励 `compare_sharpness` 的同时，必须适度惩罚 `compare_tv` 的上升，并严厉惩罚 `compare_clipping`。
 3. **目标最大化 (Always Maximize):** 将各项得分乘以你认为合理的权重并求和，返回一个 `float`。Optuna 将以最大化该返回值为目标。
 4. **鲁棒性 (Robustness):** 函数内部必须包含 `try...except` 块。如果计算过程中发生任何异常（如图像全黑导致除以零），请返回一个极低的分数（如 -9999.0），以告诉 Optuna 这是一个失败的尝试。
 
@@ -79,7 +79,7 @@ def evaluate(img: np.ndarray) -> float:
         score = 0.0
         
         # 1. 核心奖励项：满足“变清晰”的核心需求
-        score += 1.5 * vision_metrics.compare_shapness(img) 
+        score += 1.5 * vision_metrics.compare_sharpness(img) 
         
         # 2. 相对惩罚项：满足“不要引入粗糙噪点” (TV上升代表变粗糙)
         tv_change = vision_metrics.compare_tv(img)
