@@ -9,6 +9,7 @@ import json
 import yaml
 import os
 import re
+import importlib.metadata as importlib_metadata
 from pathlib import Path
 
 from utils import get_executable_dir
@@ -16,6 +17,47 @@ from utils import get_executable_dir
 logger = logging.getLogger("Searcher")
 
 class Searcher:
+    # 近似 from_pretrained 的“最小必需文件”过滤规则：
+    # 保留权重 + 配置 + tokenizer/processor + 推理相关代码；忽略样例图、文档、测试等噪声内容。
+    _MODEL_ALLOW_PATTERNS: list[str] = [
+        "*.safetensors", "*.bin", "*.pt", "*.pth", "*.ckpt", "*.onnx", "*.tflite", "*.gguf",
+        "*.json", "*.yaml", "*.yml", "*.txt", "*.model", "*.spm", "*.bpe", "*.jinja",
+        "*.py",
+        "config.json", "generation_config.json", "model_index.json",
+        "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
+        "vocab.json", "vocab.txt", "merges.txt",
+        "preprocessor_config.json", "processor_config.json", "feature_extractor_config.json",
+        "unet/*.json", "vae/*.json", "text_encoder/*.json", "text_encoder_2/*.json",
+        "scheduler/*.json"
+    ]
+    _MODEL_IGNORE_PATTERNS: list[str] = [
+        "*.png", "*.jpg", "*.jpeg", "*.gif", "*.bmp", "*.webp", "*.svg",
+        "*.mp4", "*.mov", "*.avi", "*.mkv", "*.webm",
+        "*.wav", "*.mp3", "*.flac", "*.ogg",
+        "*.md", "*.rst", "*.pdf",
+        "assets/**", "figures/**", "images/**", "media/**",
+        "docs/**", "doc/**",
+        "demo/**", "demos/**", "example/**", "examples/**", "samples/**", "sample/**",
+        "tests/**", "test/**", "benchmark/**", "benchmarks/**",
+        "training/**", "train/**"
+    ]
+    # 常见“分发包名 != import 模块名”映射
+    _PKG_IMPORT_ALIASES: dict[str, str] = {
+        "pillow": "PIL",
+        "opencv-python": "cv2",
+        "opencv-contrib-python": "cv2",
+        "opencv-python-headless": "cv2",
+        "scikit-image": "skimage",
+        "pyyaml": "yaml",
+        "huggingface-hub": "huggingface_hub",
+        "python-dateutil": "dateutil",
+        "beautifulsoup4": "bs4",
+        "faiss-cpu": "faiss",
+        "faiss-gpu": "faiss",
+        "pytorch-lightning": "pytorch_lightning",
+        "sentence-transformers": "sentence_transformers",
+    }
+
     def __init__(self, 
         llm_client,
         model_name: str = "gpt-4o-mini",
@@ -42,6 +84,46 @@ class Searcher:
         )
 
     @staticmethod
+    def _canonical_dist_name(name: str) -> str:
+        return re.sub(r"[-_.]+", "-", name.strip().lower())
+
+    @staticmethod
+    def _extract_dist_name(requirement: str) -> str:
+        req = str(requirement or "").strip()
+        if not req:
+            return ""
+        req = req.split(";", maxsplit=1)[0].strip()
+        req = req.split("[", maxsplit=1)[0].strip()
+        req = re.split(r"(==|!=|>=|<=|>|<|~=)", req, maxsplit=1)[0].strip()
+        return req
+
+    @classmethod
+    def _resolve_import_from_installed_dist(cls, dist_name: str) -> str | None:
+        if not dist_name:
+            return None
+        # 优先读取 top_level.txt（最可靠）
+        try:
+            dist = importlib_metadata.distribution(dist_name)
+            top_level = dist.read_text("top_level.txt") or ""
+            for line in top_level.splitlines():
+                mod = line.strip()
+                if mod and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", mod):
+                    return mod
+        except Exception:
+            pass
+
+        # 回退：从 packages_distributions 反向匹配
+        try:
+            canonical_target = cls._canonical_dist_name(dist_name)
+            for mod, dists in importlib_metadata.packages_distributions().items():
+                if any(cls._canonical_dist_name(d) == canonical_target for d in (dists or [])):
+                    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", mod):
+                        return mod
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
     def _split_dependencies(dependencies: str | None) -> list[str]:
         if not dependencies:
             return []
@@ -62,11 +144,22 @@ class Searcher:
                 sanitized.append(token.replace(" ", ""))
         return sanitized
 
-    @staticmethod
-    def _dependency_to_import(dep: str) -> str | None:
-        base = re.split(r"(==|!=|>=|<=|>|<|~=)", dep, maxsplit=1)[0]
-        base = base.split("[", maxsplit=1)[0]
-        name = base.replace("-", "_").split(".", maxsplit=1)[0]
+    @classmethod
+    def _dependency_to_import(cls, dep: str) -> str | None:
+        dist_name = cls._extract_dist_name(dep)
+        if not dist_name:
+            return None
+
+        canonical = cls._canonical_dist_name(dist_name)
+        if canonical in cls._PKG_IMPORT_ALIASES:
+            return cls._PKG_IMPORT_ALIASES[canonical]
+
+        resolved = cls._resolve_import_from_installed_dist(dist_name)
+        if resolved:
+            return resolved
+
+        # 回退策略：按常规转换
+        name = dist_name.replace("-", "_").split(".", maxsplit=1)[0]
         return name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) else None
 
     @staticmethod
@@ -109,7 +202,9 @@ class Searcher:
             repo_id=repo_id,
             local_dir=str(cache_dir),
             local_dir_use_symlinks=False,
-            endpoint=os.environ.get("HF_ENDPOINT")
+            endpoint=os.environ.get("HF_ENDPOINT"),
+            allow_patterns=self._MODEL_ALLOW_PATTERNS,
+            ignore_patterns=self._MODEL_IGNORE_PATTERNS
         )
         downloaded_files.append(str(Path(snapshot_dir).resolve()))
         return downloaded_files, str(cache_dir.resolve())
@@ -132,9 +227,20 @@ class Searcher:
 
         from modelscope.hub.snapshot_download import snapshot_download as ms_snapshot_download
         try:
-            snapshot_dir = ms_snapshot_download(repo_id, local_dir=str(cache_dir))
+            snapshot_dir = ms_snapshot_download(
+                repo_id,
+                local_dir=str(cache_dir),
+                allow_patterns=self._MODEL_ALLOW_PATTERNS,
+                ignore_patterns=self._MODEL_IGNORE_PATTERNS
+            )
         except TypeError:
-            snapshot_dir = ms_snapshot_download(repo_id, cache_dir=str(cache_dir))
+            # 向后兼容旧版参数名
+            snapshot_dir = ms_snapshot_download(
+                repo_id,
+                cache_dir=str(cache_dir),
+                allow_file_pattern=self._MODEL_ALLOW_PATTERNS,
+                ignore_file_pattern=self._MODEL_IGNORE_PATTERNS
+            )
         downloaded_files.append(str(Path(snapshot_dir).resolve()))
         return downloaded_files, str(cache_dir.resolve())
 
@@ -233,7 +339,7 @@ class Searcher:
             if (not github_search_available) and content['tool'].endswith("_github"):
                 tool_result = "Tool Use Error: GitHub Search API limit reached"
             else:
-                tool_result = str(self.use_tool(content['tool'], content['params'])).strip(' \n')
+                tool_result = f"{content['tool']}, {json.dumps(content['params'], ensure_ascii=False)}\n" + str(self.use_tool(content['tool'], content['params'])).strip(' \n')
             try:
                 yield 'TOOL_CALL', {
                     'tool': content['tool'],
