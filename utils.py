@@ -161,12 +161,14 @@ def format_device_info_for_prompt(device_info: dict) -> str:
         lines.append("GPU: 未通过系统命令检测到可用设备")
     return "\n".join(lines)
 
+@st.cache_resource()
 def get_executable_dir():
     if hasattr(sys, 'frozen'):
         return Path(sys.executable).parent.resolve()
     else:
         return Path(__file__).parent.resolve()
     
+@st.cache_resource()
 def get_resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
         base_path = Path(sys._MEIPASS)
