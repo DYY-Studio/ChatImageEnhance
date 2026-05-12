@@ -2,13 +2,21 @@ import streamlit as st
 import cv2
 import numpy as np
 import os
+import gc
+import torch
 
 from utils import *
 from constants import *
 
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-os.environ["TORCH_HOME"] = str(get_executable_dir() / 'models/torch')
-os.environ["HF_HOME"] = str(get_executable_dir() / 'models/clip')
+if "HF_ENDPOINT" not in os.environ:
+    os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+os.environ["TORCH_HOME"] = str(get_executable_dir() / 'caches/model_assets/torch')
+os.environ["HF_HOME"] = str(get_executable_dir() / 'caches/model_assets/huggingface')
+os.environ["MODELSCOPE_CACHE"] = str(get_executable_dir() / "caches/model_assets/modelscope")
+os.environ["PIP_CACHE_DIR"] = str(get_executable_dir() / 'caches/pip')
+
+import transformers
+transformers.logging.set_verbosity_error()
 
 from queue import Queue
 from streamlit_local_storage import LocalStorage
@@ -58,6 +66,10 @@ if 'reasoning_effort' not in st.session_state:
     st.session_state['reasoning_effort'] = None
 if 'process_img_max_side' not in st.session_state:
     st.session_state['process_img_max_side'] = 1500
+if 'device_learning_process' not in st.session_state:
+    st.session_state['device_learning_process'] = "cpu"
+if 'process_profile' not in st.session_state:
+    st.session_state['process_profile'] = "balanced"
 if 'img_bgr' not in st.session_state:
     st.session_state['img_bgr'] = None
 if 'running' not in st.session_state:
@@ -94,11 +106,38 @@ with st.sidebar:
                     st.selectbox("评价模型运行设备", get_available_devices(), key='device_learning_evaluator')
                 if st.toggle("用于处理", key='enable_learning_process'):
                     st.selectbox("处理模型运行设备", get_available_devices(), key='device_learning_process')
+                    st.selectbox(
+                        "处理显存策略",
+                        ["fast", "balanced", "low_memory"],
+                        key='process_profile',
+                        format_func=lambda x: {
+                            "fast": "高速",
+                            "balanced": "平衡（默认）",
+                            "low_memory": "低占用"
+                        }.get(x, x),
+                        help="用于高显存参数（如 tile_size）的默认倾向。实际回落由运行时自动完成。"
+                    )
         else:
             st.session_state['enable_learning_evaluator'] = False
             st.session_state['enable_learning_process'] = False
+            st.session_state['device_learning_process'] = "cpu"
+            st.session_state['process_profile'] = "balanced"
             if st.button("释放预载入模型", help="释放预载入到内存的模型", width='stretch', disabled=len(get_model_cache()) == 0):
+                devices = set([
+                    (
+                        next(model_cache['model'].parameters()).device.type
+                        if isinstance(model_cache, dict)
+                        else next(model_cache.parameters()).device.type
+                    )
+                    for model_cache in get_model_cache().values()
+                ])
                 get_model_cache().clear()
+                gc.collect()
+                for device in devices:
+                    if device != 'cpu':
+                        if (device_module := getattr(torch, device)) is not None:
+                            if (empty_cache := getattr(device_module, 'empty_cache')) is not None:
+                                empty_cache()
 
     with st.expander("模型", expanded=True):
         api_url = st.text_input(
@@ -239,7 +278,7 @@ with st.sidebar:
             if modelscope_token: localS.setItem("modelscope_token", modelscope_token, "locals_modelscope_token")
             elif localS.getItem("modelscope_token"): localS.deleteItem("modelscope_token", "del_locals_modelscope_token")
 
-if st.session_state.ui_scene in ("ToolMaker", "Chat"):
+def get_orchestrator():
     client = get_openai_client(st.session_state.api_url, st.session_state.api_key, st.session_state.proxy_url)
     orch = Orchestrator(
         CoderAgent(
@@ -252,14 +291,34 @@ if st.session_state.ui_scene in ("ToolMaker", "Chat"):
             reasoning_effort=st.session_state.reasoning_effort,
             allow_learning=st.session_state.enable_learning_evaluator
         ),
-        ToolMakerAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort)
+        ToolMakerAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort),
+        process_device=process_device,
+        process_profile=process_profile,
+        device_info=device_info_text
     )
-else:
-    client = None
-    orch = None
+    return client, orch
+
+if st.session_state.ui_scene in ("ToolMaker", "Chat"):
+    process_device = (
+        st.session_state.get('device_learning_process', 'cpu')
+        if st.session_state.get('enable_learning_process') else 'cpu'
+    )
+    process_profile = (
+        st.session_state.get('process_profile', 'balanced')
+        if st.session_state.get('enable_learning_process') else 'balanced'
+    )
+    device_info_text = format_device_info_for_prompt(get_device_info_subprocess())
+    runtime_hint = f"""
+--- 运行时约束 ---
+处理设备偏好: {process_device}
+性能档位偏好: {process_profile}
+设备信息:
+{device_info_text}
+---
+""".strip('\n')
 
 if st.session_state.ui_scene == "ToolMaker":
-    render_toolmaker(orch)
+    render_toolmaker(get_orchestrator()[1])
     st.stop()
 
 upload = st.file_uploader("上传图像", ["png", "jpg", "jpeg"])
@@ -395,6 +454,8 @@ if user_feedback:
             
             st.rerun()
 
+        client, orch = get_orchestrator()
+
         with (main_status := st.status("🛠️ 根据反馈调整并运行...", expanded=True)):
             with (eva_status := st.status("📝 LLM 调整评价策略", state="error")):
                 eva_thinking_container = st.container(border=False)
@@ -440,7 +501,7 @@ if user_feedback:
                 image=img_to_process,
                 model_cache=get_model_cache(),
                 device=st.session_state.get('device_learning_evaluator'),
-                user_prompt=generate_user_prompt(user_feedback, True, True, step_by_step),
+                user_prompt=f"{generate_user_prompt(user_feedback, True, True, step_by_step)}\n\n{runtime_hint}",
                 max_side=process_img_max_side if low_res_process else 0
             ):
                 if t == "CODE_EVALUATE.START":
@@ -470,7 +531,7 @@ if user_feedback:
                     image=img_to_process,
                     evaluate_code_str=evaluate_code_str,
                     best_queue=best_queue,
-                    user_prompt=generate_user_prompt(user_feedback, True, True, step_by_step),
+                    user_prompt=f"{generate_user_prompt(user_feedback, True, True, step_by_step)}\n\n{runtime_hint}",
                     n_trials=n_trials,
                     callbacks=[callback],
                     max_side=process_img_max_side if low_res_process else 0
@@ -545,7 +606,8 @@ if user_feedback:
                         tool_request,
                         search_result,
                         additional_imports=runtime_imports,
-                        additional_packages=runtime_packages
+                        additional_packages=runtime_packages,
+                        runtime_context=runtime_hint
                     ):
                         if t == "CODE_TOOL.STREAM":
                             toolmaker_handler.content_chunk(body)
