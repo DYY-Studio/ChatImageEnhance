@@ -5,6 +5,7 @@ from core.orchestrator import Orchestrator
 from utils import get_openai_client
 
 from components.tool_search import StSearch, StStreamResHandler
+from components import render_tool_save_button
 
 def render_toolmaker(orch: Orchestrator):
     tool_request = st.chat_input("工具要求")
@@ -22,11 +23,18 @@ def render_toolmaker(orch: Orchestrator):
 
             tool_status.update(state='running')
             if search_container:
+                allow_learning_process = bool(st.session_state.get("enable_learning_process", False))
+                allowed_search_sources = (
+                    ("github", "huggingface", "modelscope")
+                    if allow_learning_process else
+                    ("github",)
+                )
                 searcher = Searcher(
                     client, st.session_state.selected_model,
                     github_token=st.session_state.github_token,
                     huggingface_token=st.session_state.huggingface_token,
-                    modelscope_token=st.session_state.modelscope_token
+                    modelscope_token=st.session_state.modelscope_token,
+                    allowed_sources=allowed_search_sources
                 )
                 search_result = StSearch(
                     searcher, tool_request, search_container, 
@@ -90,8 +98,15 @@ def render_toolmaker(orch: Orchestrator):
                 
                 toolmaker_handler = StStreamResHandler(toolmaker_status, toolmaker_container)
             elif t == "FINISH":
+                body["additional_imports"] = runtime_imports or []
+                body["additional_packages"] = runtime_packages or []
                 with main_container:
                     st.info("运行结束")
                     st.markdown('```python\n' + body.get('code') + '\n```')
                     st.json(body['schema'])
+                    render_tool_save_button(
+                        body,
+                        button_label="🆕 保存新工具",
+                        button_key=f"save_tool_debug_{body.get('schema', {}).get('name', 'unknown')}"
+                    )
                 new_tool = body
