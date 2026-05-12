@@ -1,6 +1,6 @@
 from agents.base_agent import BaseAgent
 from utils import get_executable_dir
-from typing import Generator, Literal
+from typing import Generator, Literal, Iterable
 
 from github import Github
 from github.ContentFile import ContentFile
@@ -23,6 +23,7 @@ class SearcherAgent(BaseAgent):
         github_client: Github | None = None, 
         huggingface_token: str | None = None,
         modelscope_token: str | None = None,
+        allowed_sources: Iterable[Literal["github", "huggingface", "modelscope"]] | None = None,
         temperature: float = 0.1,
         reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None,
         **kwargs
@@ -35,6 +36,15 @@ class SearcherAgent(BaseAgent):
         :param github_client: 初始化完成的PyGithub绑定，如果传入None，则本Agent不工作
         :param temperature: 生成温度，低温度保证代码逻辑稳定性（0.0-0.2为宜）
         """
+        normalized_allowed = {
+            str(source).strip().lower() for source in (allowed_sources or ("github", "huggingface", "modelscope"))
+            if str(source).strip()
+        }
+        normalized_allowed &= {"github", "huggingface", "modelscope"}
+        if not normalized_allowed:
+            normalized_allowed = {"github"}
+        self.allowed_sources = normalized_allowed
+
         # 构造CoderAgent专属的系统提示词，明确代码生成规则
         system_prompt = self._build_system_prompt()
         # 调用父类初始化（LLM客户端、模型名、系统提示词、温度）
@@ -289,6 +299,16 @@ class SearcherAgent(BaseAgent):
         构建专属系统提示词，明确代码生成的硬性规则和格式要求
         核心原则：让LLM生成可直接被Optuna调用、容错性强的process函数
         """
+        enabled_sources = sorted(self.allowed_sources)
+        disabled_sources = [s for s in ("github", "huggingface", "modelscope") if s not in self.allowed_sources]
+        source_policy = (
+            f"可用检索源: {', '.join(enabled_sources)}。\n"
+            + (
+                f"禁用检索源: {', '.join(disabled_sources)}。你绝对不能调用这些来源对应的任何工具。"
+                if disabled_sources else
+                "当前没有禁用的检索源。"
+            )
+        )
         prompt = """
 # Role: Code Searcher Agent
 你是系统中负责“代码检索与评估”的资深研发工程师。
@@ -298,6 +318,8 @@ class SearcherAgent(BaseAgent):
 # Objective
 根据用户的自然语言需求（例如：“寻找一段可以将图片卡通化的代码”或“找一个可以将图片动漫化的开源模型”），在 GitHub、Hugging Face 或 ModelScope 上定位最佳仓库/模型，提取可运行的核心算法或推理管道函数。
 **注意：是否启用 Hugging Face 和 ModelScope 检索，以及优先使用哪个平台，由用户的具体要求或上下文决定。**
+运行时来源策略：
+$SOURCE_POLICY$
 
 # Available Tools
 你必须严格按照逻辑顺序使用以下工具：
@@ -421,7 +443,7 @@ submit_findings(
 }
 ```
         """
-        return prompt.strip()
+        return prompt.strip().replace("$SOURCE_POLICY$", source_policy, 1)
     
     def generate_prompt(self, 
         user_intent: str = '', 

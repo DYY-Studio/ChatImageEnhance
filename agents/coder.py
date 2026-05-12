@@ -23,6 +23,7 @@ class CoderAgent(BaseAgent):
         temperature: float = 0.1, 
         reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None,
         low_res: bool = False,
+        allow_learning: bool = True,
         additional_imports: list[str] | None = None,
         **kwargs
     ):
@@ -34,9 +35,20 @@ class CoderAgent(BaseAgent):
         :param temperature: 生成温度，低温度保证代码逻辑稳定性（0.0-0.2为宜）
         """
         self.low_res = low_res
+        self.allow_learning = bool(allow_learning)
+        dynamic_imports = [
+            str(imp).strip() for imp in (additional_imports or [])
+            if str(imp).strip()
+        ]
+        if not self.allow_learning:
+            blocked_roots = {"torch", "torchvision", "transformers", "diffusers", "modelscope", "huggingface_hub"}
+            dynamic_imports = [
+                imp for imp in dynamic_imports
+                if imp.split(".", maxsplit=1)[0].strip().lower() not in blocked_roots
+            ]
         self.additional_imports = ', '.join(
-            f"`{imp}`" for imp in additional_imports
-        ) if additional_imports is not None and additional_imports else ''
+            f"`{imp}`" for imp in dynamic_imports
+        ) if dynamic_imports else ''
         # 调用父类初始化（LLM客户端、模型名、系统提示词、温度）
         super().__init__(llm_client, model_name, self._build_system_prompt(), temperature, reasoning_effort, **kwargs)
         
@@ -78,12 +90,23 @@ class CoderAgent(BaseAgent):
     - **禁止调优的参数类型**：`cache`、`device`、`model_dir`、字符串路径、模型ID等运行时/环境参数，必须使用常量或直接透传，不得 `trial.suggest_*`
 * **库访问**：你只能使用下列库：
     - 基础处理: `np` (numpy), `cv2` (opencv-contrib-python), `optuna`, `skimage` (scikit-image), `PIL` (pillow) 以及提供的算子库 `cv_wrappers`
-    - 深度学习: `torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`, {self.additional_imports}
+    - 深度学习:
+      {
+        (
+            "`torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`, "
+            f"{self.additional_imports if self.additional_imports else '（无额外模块）'}"
+        ) if self.allow_learning else "当前会话已禁用深度学习处理，严禁使用 `torch` / `torchvision` / `transformers` / `diffusers` / `modelscope` 及任何需要下载/加载深度模型的模块。"
+      }
 * **算子调用**：所有算子必须通过 `cv_wrappers.算子名(img, **params)` 的形式调用
 * **纯净性**：函数内不要导入模块，不要使用 `import`, `__import__` 语句，不要定义全局变量
 * **辅助函数**：允许编写辅助函数简化过程、提高可读性，辅助函数必须嵌套在process函数中
 * **单例模式**: 代码会被多次执行，只需要加载一次的内容必须放置在 `cache` 字典中
 * **本地模型优先**: 若调用深度学习算子且其参数包含 `model_dir`，必须优先透传该本地目录，不要在 `process` 中构造联网下载逻辑
+* **深度学习开关**: 当前会话{
+    "启用" if self.allow_learning else "禁用"
+}深度学习处理。{
+    "允许使用深度学习算子，但必须遵守本地模型优先与显存回落规则。" if self.allow_learning else "禁止生成任何需要深度学习推理/模型权重加载的处理流程。若需求必须依赖深度学习，请输出 NEED_NEW_TOOL 并在 description 明确“当前深度学习已禁用，无法执行”。"
+}
 * **运行时信息读取**: 可从 `cache.get("__runtime__", {{}})` 读取运行时偏好：
     - `preferred_device`: 用户选择的处理设备（如 `cuda` / `mps` / `cpu`）
     - `performance_profile`: 用户选择的性能档位（`fast` / `balanced` / `low_memory`）
@@ -108,7 +131,7 @@ class CoderAgent(BaseAgent):
 }
 
 ### Provided Schema / 算子库文档
-{global_registry.get_all_schemas_for_llm()}
+{global_registry.get_all_schemas_for_llm(allow_learning=self.allow_learning)}
 
 ### Output Format / 输出格式要求
 #### 格式 A：输出处理代码 (情况 A)

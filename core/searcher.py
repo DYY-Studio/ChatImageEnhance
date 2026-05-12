@@ -1,7 +1,7 @@
 from agents.searcher import SearcherAgent
 
 from github import Auth, Github
-from typing import Generator, Literal
+from typing import Generator, Literal, Iterable
 
 import time
 import logging
@@ -17,6 +17,8 @@ from utils import get_executable_dir
 logger = logging.getLogger("Searcher")
 
 class Searcher:
+    _ALL_SOURCES: tuple[str, ...] = ("github", "huggingface", "modelscope")
+
     # 近似 from_pretrained 的“最小必需文件”过滤规则：
     # 保留权重 + 配置 + tokenizer/processor + 推理相关代码；忽略样例图、文档、测试等噪声内容。
     _MODEL_ALLOW_PATTERNS: list[str] = [
@@ -66,8 +68,18 @@ class Searcher:
         github_token: str | None = None,
         huggingface_token: str | None = None,
         modelscope_token: str | None = None,
+        allowed_sources: Iterable[Literal["github", "huggingface", "modelscope"]] | None = None,
         **kwargs
     ):
+        normalized_allowed = {
+            str(source).strip().lower() for source in (allowed_sources or self._ALL_SOURCES)
+            if str(source).strip()
+        }
+        normalized_allowed &= set(self._ALL_SOURCES)
+        if not normalized_allowed:
+            normalized_allowed = {"github"}
+        self.allowed_sources = normalized_allowed
+
         if github_token:
             auth = Auth.Token(github_token)
             self.github = Github(auth=auth)
@@ -80,8 +92,25 @@ class Searcher:
             reasoning_effort=reasoning_effort,
             huggingface_token=huggingface_token,
             modelscope_token=modelscope_token,
+            allowed_sources=tuple(sorted(self.allowed_sources)),
             **kwargs
         )
+
+    @staticmethod
+    def _source_for_tool(tool_name: str) -> str | None:
+        name = str(tool_name or "").strip().lower()
+        if name.endswith("_github"):
+            return "github"
+        if name.endswith("_hf"):
+            return "huggingface"
+        if name.endswith("_modelscope"):
+            return "modelscope"
+        return None
+
+    def _is_source_allowed(self, source: str | None) -> bool:
+        if source is None:
+            return True
+        return str(source).strip().lower() in self.allowed_sources
 
     @staticmethod
     def _canonical_dist_name(name: str) -> str:
@@ -273,6 +302,10 @@ class Searcher:
         enriched["download_error"] = None
         enriched["require_files"] = require_files
 
+        if source and not self._is_source_allowed(source):
+            enriched["download_error"] = f"source_disabled:{source}"
+            return enriched
+
         if not auto_download or source not in ("huggingface", "modelscope") or not repo_id:
             return enriched
 
@@ -289,6 +322,10 @@ class Searcher:
         return enriched
 
     def use_tool(self, tool_name: str, params: dict):
+        source = self._source_for_tool(tool_name)
+        if source and not self._is_source_allowed(source):
+            return f"Tool Use Error: Source {source} is disabled by runtime policy"
+
         if (func := getattr(self.searcher, f"_{tool_name}", False)):
             try:
                 return func(**params)
@@ -299,7 +336,11 @@ class Searcher:
 
     def search(self, prompt: str, steps_limit: int = 30, interval: float = 0.5) -> Generator[tuple[str, str | dict], None, None]:
         content: dict | None = None
-        thinks: str = f"用户输入: {prompt.strip()}\n用户限制：最多执行{steps_limit}次"
+        thinks: str = (
+            f"用户输入: {prompt.strip()}\n"
+            f"用户限制：最多执行{steps_limit}次\n"
+            f"可用检索源: {', '.join(sorted(self.allowed_sources))}"
+        )
         tool_result: str = ''
 
         github_search_available = True
@@ -307,7 +348,10 @@ class Searcher:
             rate_limit = self.github.get_rate_limit().resources
             github_search_available = bool(rate_limit.search.remaining)
             if not github_search_available:
-                thinks += "\n系统限制：GitHub Search API额度已耗尽，请避免使用GitHub工具，优先使用HuggingFace或ModelScope工具。"
+                if any(src in self.allowed_sources for src in ("huggingface", "modelscope")):
+                    thinks += "\n系统限制：GitHub Search API额度已耗尽，请避免使用GitHub工具，优先使用HuggingFace或ModelScope工具。"
+                else:
+                    thinks += "\n系统限制：GitHub Search API额度已耗尽，且当前运行策略仅允许 GitHub 来源。"
                 yield 'SEARCH.API_LIMIT_REACHED', None
         except Exception:
             pass

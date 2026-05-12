@@ -279,19 +279,36 @@ with st.sidebar:
             elif localS.getItem("modelscope_token"): localS.deleteItem("modelscope_token", "del_locals_modelscope_token")
 
 def get_orchestrator():
+    allow_learning_process = bool(st.session_state.get("enable_learning_process", False))
+    process_device = (
+        st.session_state.get('device_learning_process', 'cpu')
+        if allow_learning_process else 'cpu'
+    )
+    process_profile = (
+        st.session_state.get('process_profile', 'balanced')
+        if allow_learning_process else 'balanced'
+    )
+    device_info_text = format_device_info_for_prompt(get_device_info_subprocess())
+
     client = get_openai_client(st.session_state.api_url, st.session_state.api_key, st.session_state.proxy_url)
     orch = Orchestrator(
         CoderAgent(
             client, selected_model, 
             reasoning_effort=st.session_state.reasoning_effort, 
-            low_res=low_res_process
+            low_res=low_res_process,
+            allow_learning=allow_learning_process
         ),
         EvaluatorAgent(
             client, selected_model, 
             reasoning_effort=st.session_state.reasoning_effort,
             allow_learning=st.session_state.enable_learning_evaluator
         ),
-        ToolMakerAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort),
+        ToolMakerAgent(
+            client, selected_model,
+            reasoning_effort=st.session_state.reasoning_effort,
+            allow_learning=allow_learning_process
+        ),
+        allow_learning_process=allow_learning_process,
         process_device=process_device,
         process_profile=process_profile,
         device_info=device_info_text
@@ -299,17 +316,19 @@ def get_orchestrator():
     return client, orch
 
 if st.session_state.ui_scene in ("ToolMaker", "Chat"):
+    allow_learning_process = bool(st.session_state.get("enable_learning_process", False))
     process_device = (
         st.session_state.get('device_learning_process', 'cpu')
-        if st.session_state.get('enable_learning_process') else 'cpu'
+        if allow_learning_process else 'cpu'
     )
     process_profile = (
         st.session_state.get('process_profile', 'balanced')
-        if st.session_state.get('enable_learning_process') else 'balanced'
+        if allow_learning_process else 'balanced'
     )
     device_info_text = format_device_info_for_prompt(get_device_info_subprocess())
     runtime_hint = f"""
 --- 运行时约束 ---
+深度学习处理: {'enabled' if allow_learning_process else 'disabled'}
 处理设备偏好: {process_device}
 性能档位偏好: {process_profile}
 设备信息:
@@ -566,11 +585,18 @@ if user_feedback:
 
                                 tool_status.update(state='running')
                                 if search_container:
+                                    allow_learning_process = bool(st.session_state.get("enable_learning_process", False))
+                                    allowed_search_sources = (
+                                        ("github", "huggingface", "modelscope")
+                                        if allow_learning_process else
+                                        ("github",)
+                                    )
                                     searcher = Searcher(
                                         client, selected_model,
                                         github_token=github_token,
                                         huggingface_token=huggingface_token,
-                                        modelscope_token=modelscope_token
+                                        modelscope_token=modelscope_token,
+                                        allowed_sources=allowed_search_sources
                                     )
                                     search_result = StSearch(
                                         searcher, tool_request, search_container, search_steps_limit, search_interval
@@ -629,6 +655,8 @@ if user_feedback:
                             
                             toolmaker_handler = StStreamResHandler(toolmaker_status, toolmaker_container)
                         elif t == "FINISH":
+                            body["additional_imports"] = runtime_imports or []
+                            body["additional_packages"] = runtime_packages or []
                             new_tool = body
 
         # --- 收尾与状态更新 ---

@@ -3,6 +3,7 @@ import numpy as np
 import ast
 import time
 import inspect
+import re
 import builtins as py_builtins
 
 from tools import global_registry
@@ -519,6 +520,13 @@ class SandboxExecutor:
                 else:
                     performance = "slowest"
 
+                schema = dict(schema)
+                schema["requires_learning"] = bool(
+                    re.search(
+                        r"\b(torch|torchvision|transformers|diffusers|modelscope|huggingface_hub)\b",
+                        code_str
+                    )
+                )
                 global_registry.dynamic_register(tool_func, schema, performance)
                 return None
             except Exception as e:
