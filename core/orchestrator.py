@@ -25,12 +25,19 @@ class Orchestrator:
         coder: CoderAgent, 
         evaluator_agent: EvaluatorAgent, 
         toolmaker_agent: ToolMakerAgent,
-        max_llm_retries: int = 3
+        max_llm_retries: int = 3,
+        process_device: str = "cpu",
+        process_profile: str = "balanced",
+        device_info: str = ""
     ):
         # 初始化各个组件
         # self.planner = PlannerAgent(...)
         self.coder = coder
-        self.executor = SandboxExecutor()
+        self.executor = SandboxExecutor(
+            preferred_device=process_device,
+            performance_profile=process_profile,
+            device_info=device_info
+        )
         self.evaluator_agent = evaluator_agent
         self.toolmaker_agent = toolmaker_agent
         self.max_llm_retries = max_llm_retries
@@ -49,7 +56,8 @@ class Orchestrator:
         tool_request: str,
         search_result: dict | None = None,
         additional_imports: Iterable[str] | None = None,
-        additional_packages: Iterable[str] | None = None
+        additional_packages: Iterable[str] | None = None,
+        runtime_context: str | None = None
     ) -> Generator[tuple[
         Literal[
             "CODE_TOOL.START", "CODE_TOOL.END", "CODE_TOOL.STREAM", "CODE_TOOL.TEST",
@@ -58,6 +66,8 @@ class Orchestrator:
         str | dict | None
     ], None, None]:
         toolmaker_prompt = f"用户需求: \n{tool_request}"
+        if runtime_context:
+            toolmaker_prompt += f"\n\n运行时环境约束:\n{runtime_context.strip()}"
         if isinstance(search_result, dict) and 'code_snippets' in search_result and 'summary' in search_result:
             extra_lines = []
             if search_result.get("source"):
