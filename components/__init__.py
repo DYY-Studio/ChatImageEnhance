@@ -320,6 +320,32 @@ def delete_message(idx: int, target_only: bool = False):
     if clear_encoded_cache:
         get_encoded_img.clear()
 
+@st.cache_resource()
+def extract_funcs(matches: list[str], used_functions: dict):
+    for called_func_name in set(matches):  # 去重
+        logger.info(f"正在处理函数: {called_func_name}")
+        
+        # 尝试通过注册表映射查找实际函数
+        if called_func_name in global_registry.tools:
+            func: Callable = global_registry.tools[called_func_name]['func']
+            actual_name = func.__name__
+            logger.info(f"-> 映射找到: {called_func_name} -> {func.__name__}")
+            
+            # 根据模块名获取对应的模块对象
+            source = _extract_wrapper_source(func)
+            logger.info(f"-> 提取源码: {'成功' if source else '失败'}")
+            
+            if source:
+                # 关键修复：将函数名替换为 LLM 使用的注册表名称
+                # 例如：将 "def safe_enhance_clahe(...)" 替换为 "def CLAHE_Enhancement(...)"
+                source = re.sub(rf'def\s+{actual_name}\s*\(', f'def {called_func_name}(', source)
+                used_functions[called_func_name] = source
+                logger.info(f"-> ✅ 成功添加到 used_functions")
+            else:
+                logger.info(f"-> ❌ 源码提取失败，跳过")
+        else:
+            logger.info(f"-> 不在注册表映射中")
+
 def render_message_content(msg, index: int):
     """提取内部渲染逻辑，供历史记录与最新消息复用"""
     st.markdown(msg["content"])
@@ -417,29 +443,7 @@ def render_message_content(msg, index: int):
                 else:
                     logger.info(f"未检测到任何 cv_wrappers/skimage_wrappers 调用")
                 
-                for called_func_name in set(matches):  # 去重
-                    logger.info(f"正在处理函数: {called_func_name}")
-                    
-                    # 尝试通过注册表映射查找实际函数
-                    if called_func_name in global_registry.tools:
-                        func: Callable = global_registry.tools[called_func_name]['func']
-                        actual_name = func.__name__
-                        logger.info(f"-> 映射找到: {called_func_name} -> {func.__name__}")
-                        
-                        # 根据模块名获取对应的模块对象
-                        source = _extract_wrapper_source(func)
-                        logger.info(f"-> 提取源码: {'成功' if source else '失败'}")
-                        
-                        if source:
-                            # 关键修复：将函数名替换为 LLM 使用的注册表名称
-                            # 例如：将 "def safe_enhance_clahe(...)" 替换为 "def CLAHE_Enhancement(...)"
-                            source = re.sub(rf'def\s+{actual_name}\s*\(', f'def {called_func_name}(', source)
-                            used_functions[called_func_name] = source
-                            logger.info(f"-> ✅ 成功添加到 used_functions")
-                        else:
-                            logger.info(f"-> ❌ 源码提取失败，跳过")
-                    else:
-                        logger.info(f"-> 不在注册表映射中")
+                extract_funcs(matches, used_functions)
                 
                 logger.info(f"最终 used_functions 包含的函数: {list(used_functions.keys())}")
                 
@@ -562,8 +566,8 @@ if __name__ == "__main__":
 
             image_comparison(
                 get_thumbnail_img_wrapper(st.session_state['img_bgr'], 'b64') if comp_target == "原图" else get_thumbnail_img_wrapper(prev_image, 'b64'),
-                get_thumbnail_img_wrapper(st.session_state['best_bgr'], 'b64'),
-                get_thumbnail_size(st.session_state['best_bgr'], st.session_state['preview_img_max_side'])[1],
+                get_thumbnail_img_wrapper(msg["image"], 'b64'),
+                get_thumbnail_size(msg["image"], st.session_state['preview_img_max_side'])[1],
                 comp_target,
                 "最新"
             )
