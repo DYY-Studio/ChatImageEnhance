@@ -14,7 +14,7 @@ from core.optimizer import BayesianOptimizer
 from core.evaluator import Evaluator
 
 from typing import Generator, Callable, Iterable, Literal
-from queue import Queue
+from collections import deque
 
 logger = logging.getLogger("Orchestrator")
 
@@ -236,7 +236,7 @@ class Orchestrator:
     def process_stream(self, 
         image: np.ndarray, 
         evaluate_code_str: str,
-        best_queue: Queue,
+        best_queue: deque[np.ndarray],
         user_prompt: str = '', 
         n_trials: int = 30,
         callbacks: Iterable[Callable[[optuna.study.Study, optuna.trial.FrozenTrial], None]] | None = None,

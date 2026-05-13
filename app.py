@@ -18,7 +18,7 @@ os.environ["PIP_CACHE_DIR"] = str(get_executable_dir() / 'caches/pip')
 import transformers
 transformers.logging.set_verbosity_error()
 
-from queue import Queue
+from collections import deque
 from streamlit_local_storage import LocalStorage
 
 from components.optuna_callbacks import StOptunaCallbackImg
@@ -27,7 +27,7 @@ from components.llm_response_handler import StStreamResHandler
 from components.image_analyze import image_analyze
 from components.tools_playground import render_playground
 from components.debug_toolmaker import render_toolmaker
-from components import get_thumbnail_img_wrapper, render_message_content, get_previous_img, generate_user_prompt
+from components import get_thumbnail_img_wrapper, render_message_content, get_previous_img, generate_user_prompt, extract_funcs
 
 from core.orchestrator import Orchestrator
 from core.evaluator import Evaluator
@@ -485,6 +485,7 @@ else:
     load_bgr_img_from_file.clear()
     get_thumbnail_img.clear()
     unload_models()
+    extract_funcs.clear()
     get_evaluator.clear()
     get_thumb_evaluator.clear()
     st.stop()
@@ -496,6 +497,9 @@ if st.session_state.ui_scene != "Chat":
     st.stop()
     # --- 渲染历史聊天记录 ---
 
+if not st.session_state.messages:
+    extract_funcs.clear()
+    
 for i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         render_message_content(msg, i)
@@ -571,7 +575,7 @@ if user_feedback:
                 with preview_tab: best_img = st.empty()
                 with data_tab: table_placeholder = st.empty()
 
-            best_queue = Queue()
+            best_queue = deque(maxlen=1)
             prev_img_bgr = get_previous_img(len(st.session_state.messages))
             # ===== [修改] 创建回调时传入自适应早停参数 =====
             callback = StOptunaCallbackImg(

@@ -5,7 +5,7 @@ import re
 
 from sandbox.executor import SandboxExecutor
 from typing import Iterable, Callable
-from queue import Queue
+from collections import deque
 
 logger = logging.getLogger("BayesianOptimizer")
 
@@ -90,7 +90,7 @@ class BayesianOptimizer:
         evaluate_code_str: str,
         base_img: np.ndarray, 
         orig_img: np.ndarray,
-        best_queue: Queue,
+        best_queue: deque[np.ndarray],
         n_trials: int = 30, 
         callbacks: Iterable[Callable[[optuna.study.Study, optuna.trial.FrozenTrial], None]] | None = None,
     ) -> dict:
@@ -117,9 +117,9 @@ class BayesianOptimizer:
                 study = trial.study
                 try:
                     if score > study.best_value:
-                        best_queue.put(result_img)
+                        best_queue.append(result_img)
                 except:
-                    best_queue.put(result_img)
+                    best_queue.append(result_img)
                 return score
             except optuna.TrialPruned:
                 pass
