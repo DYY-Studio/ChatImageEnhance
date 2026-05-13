@@ -1,6 +1,8 @@
 from agents.base_agent import BaseAgent
+from agents.tools.web_search import WebSearchTool
 from utils import get_executable_dir
 from typing import Generator, Literal, Iterable
+from collections import deque
 
 from github import Github
 from github.ContentFile import ContentFile
@@ -12,6 +14,7 @@ from huggingface_hub import HfApi, RepoFile
 import logging
 import yaml
 import httpx
+import trafilatura
 
 logger = logging.getLogger("SearcherAgent")
 
@@ -61,9 +64,31 @@ class SearcherAgent(BaseAgent):
         if github_client is not None:
             github_client.per_page = 10
         self.curr_repo = None
-        self.query_cache: dict[str, str] = {}
+
+        self.web_search_tool = WebSearchTool()
+        self.result_cache: deque[str] = deque(maxlen=3)
 
         logger.info("CoderAgent 初始化完成，已加载全局算子注册表")
+
+    def _search_web(self, query: str):
+        response = self.web_search_tool.search(query, 10)
+        if response.count > 0:
+            yaml_text = yaml.dump([
+                {
+                    'title': result.title,
+                    'snippet': result.snippet,
+                    'url': result.url
+                }
+                for result in response.results
+            ], allow_unicode=True, indent=2)
+            return yaml_text
+        else:
+            return 'No result'
+
+    def _read_html(self, url: str):
+        res = self.web_search_tool.session.get(url)
+        res.raise_for_status()
+        return trafilatura.extract(res.text, output_format='markdown')
 
     def _read_localfile(self, path: str, start_line: int = 0, end_line: int = -1, clean_text: bool = False):
         try:
@@ -84,21 +109,18 @@ class SearcherAgent(BaseAgent):
 
 
     def _search_repos_github(self, query: str) -> str:
-        if query not in self.query_cache:
-            self.query_cache.clear()
-            yaml_text = yaml.dump([
-                {
-                    'name': repo.full_name,
-                    'desc': repo.description,
-                    'stars': repo.stargazers_count,
-                    'forks': repo.forks_count,
-                    'lang': repo.language,
-                    'updated': repo.updated_at.isoformat(),
-                }
-                for repo in self.github_client.search_repositories(query, 'stars', 'desc').get_page(0)
-            ], allow_unicode=True, indent=2)
-            self.query_cache[query] = yaml_text if yaml_text != '[]' else 'No result'
-        return self.query_cache[query]
+        yaml_text = yaml.dump([
+            {
+                'name': repo.full_name,
+                'desc': repo.description,
+                'stars': repo.stargazers_count,
+                'forks': repo.forks_count,
+                'lang': repo.language,
+                'updated': repo.updated_at.isoformat(),
+            }
+            for repo in self.github_client.search_repositories(query, 'stars', 'desc').get_page(0)
+        ], allow_unicode=True, indent=2)
+        return yaml_text if yaml_text != '[]' else 'No result'
 
     def _get_repo_overview_github(self, repo_name: str) -> str:
         self.curr_repo = self.github_client.get_repo(repo_name)
@@ -302,7 +324,7 @@ class SearcherAgent(BaseAgent):
         enabled_sources = sorted(self.allowed_sources)
         disabled_sources = [s for s in ("github", "huggingface", "modelscope") if s not in self.allowed_sources]
         source_policy = (
-            f"可用检索源: {', '.join(enabled_sources)}。\n"
+            f"可用检索源: web, {', '.join(enabled_sources)}。\n"
             + (
                 f"禁用检索源: {', '.join(disabled_sources)}。你绝对不能调用这些来源对应的任何工具。"
                 if disabled_sources else
@@ -322,6 +344,10 @@ $SOURCE_POLICY$
 
 # Available Tools
 你必须严格按照逻辑顺序使用以下工具：
+## Web Search Engine (寻找合适的算法的名称)
+1. `web_search(query: str)`: 检索 DuckDuckGo (如果失败回落到 Bing)，返回前10条搜索结果
+2. `read_html(url: str)`: 将指定URL指向的HTML文档转换为Markdown并返回
+
 ## GitHub (传统算法、综合代码库)
 1. `search_repos_github(query: str)`: 搜索相关仓库并返回 Top 10（按相关性排序）。
 2. `get_repo_overview_github(repo_name: str)`: 获取仓库的 README 摘要及根目录文件树。
@@ -357,15 +383,15 @@ submit_findings(
     - 对于传统代码，传入主要的处理逻辑即可。
     - 对于模型，还需要带上模型的载入逻辑（可以用`transformers`或`modelscope`直接`from_pretrained`吗？还是需要下载权重后自行加载？）。
     - 确保包含了必要的`import`语句
-  - `dependencies`: (仅人工智能) 包名，用于从`pypi`安装，以空格分隔，不要传入其他内容。
+  - `dependencies`: 包名，用于从`pypi`安装，以空格分隔，不要传入其他内容。
   - `source`: 这个项目来自哪个源，可以填写`github`, `huggingface`或`modelscope`
-  - `require_files`: (仅 HuggingFace 和 ModelScope) 需要下载的文件路径列表（如权重、配置、tokenizer、processor）。无法确定时允许留空（留空会触发快照下载）。
+  - `require_files`: 需要下载的文件路径列表（如权重、配置、tokenizer、processor）。无法确定时允许留空（留空会触发快照下载）。
 * 失败时不需要传入任何params，（可选）或可以传入`summary`解释原因。
 
 # Workflow (Drill-Down 策略)
 你必须遵循以下探索路径：
 1. **定向 (Targeting):** 分析用户需求，结合来源策略，决定目标平台。如果是传统图像处理，优先 GitHub；如果是传统方法难以完成的任务（如风格迁移），优先考虑 Hugging Face 或 ModelScope。
-2. **探索 (Search):** 使用对应的搜索工具（`search_repos_github`, `search_models_hf`, 或 `search_models_modelscope`）寻找高相关目标。优先搜索你已知的适合该领域的模型，如果找不到则提取最核心的关键字进行搜索。
+2. **探索 (Search):** 使用对应的搜索工具（`search_web`, `search_repos_github`, `search_models_hf`, 或 `search_models_modelscope`）寻找高相关目标。优先搜索你已知的适合该领域的模型，如果找不到则提取最核心的关键字进行搜索。
 3. **侦察 (Recon):** 使用 `get_repo_overview` 或 `get_readme` 查看仓库/模型是否有价值。对于模型，重点查看 README 中的 "Usage" 或 "Inference" 示例代码。如果描述不符，立即换一个。
 4. **下钻 (Drill):** 观察文件树（`list_directory`）。在 GitHub 中通常寻找 `src`, `core`, 或 `.py` 源码；在 HF/ModelScope 中通常寻找包含推理逻辑的 `app.py`, `inference.py`, `pipeline.py`。
 5. **提取 (Extract):** 使用 `read_file` 工具阅读目标文件。先阅读前 100 行确认依赖和接口，再提取完整逻辑。
@@ -387,9 +413,10 @@ submit_findings(
    - 对于 **GitHub 传统算法**：务必注意代码是否可以仅使用 `numpy`, `cv2` (opencv-contrib-python), `skimage`, `math`, `PIL` 实现。
    - 对于 **Hugging Face / ModelScope 模型**：环境已经预装常用依赖 `torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`。如果有其他必要的依赖，在 `submit_findings` 时必须准确列出。
 6. **跨语言参考 (仅限GitHub):** 当且仅当多次尝试无法找到Python实现时，允许对其他语言的代码进行总结提炼，提交转写后的伪代码或Python代码。
-7. **最小下载优先:** 对于 HuggingFace / ModelScope，优先提交最小 `require_files`，避免整仓下载。常见必需文件包括：权重文件、配置文件、tokenizer/processor 文件、推理必须脚本。
-8. **错误处理:** 遇到网络或 API 错误等无法修复的问题，直接提交“未找到”，并在 `summary` 字段说明。
-9. **见好就收:** 如果寻找多个目标后仍有部分功能无法实现，选择能实现最多功能的进行提交，不要因贪心超出步数限制。
+7. **设备符合:** 参考传入的设备信息，选择能够在该设备上正常运行的实现，严禁选择参数量过大无法在设备上运行的项目。
+8. **最小下载优先:** 对于 HuggingFace / ModelScope，优先提交最小 `require_files`，避免整仓下载。常见必需文件包括：权重文件、配置文件、tokenizer/processor 文件、推理必须脚本。
+9. **错误处理:** 遇到网络或 API 错误等无法修复的问题，直接提交“未找到”，并在 `summary` 字段说明。
+10. **见好就收:** 如果寻找多个目标后仍有部分功能无法实现，选择能实现最多功能的进行提交，不要因贪心超出步数限制。
 
 # Search Guidance
 
@@ -430,10 +457,11 @@ submit_findings(
 * 示例：寻找人像动漫化模型时，可以使用 `query="动漫"`, `task="vision-generation:image-portrait-stylization"`。
 
 # Output Format Example
-每一次回复，你必须输出使用Markdown包裹的严格的JSON格式，包含下列三个字段：
+每一次回复，你必须输出使用Markdown包裹的严格的JSON格式，包含下列四个字段：
 ```json
 {
     "think": "目标是寻找图片卡通化代码。我已经看了 Top 1 仓库 `cartoon-engine` 的 README，确认它符合要求。它根目录下有一个 `src/` 文件夹。我接下来需要调用 `list_directory` 查看 `src/` 里面的内容，寻找类似 `process.py` 或 `filter.py` 的文件。",
+    "cache": false, // 要求流程控制系统缓存上次调用结果，下次的提示词会携带已缓存的内容。最多缓存3个结果，此后会删除最旧缓存再增加新缓存。推荐缓存：搜索结果列表，关键文件，文件列表。
     "tool": "list_directory_github",
     "params": {
         "repo_name": "example/cartoon-engine",
@@ -452,13 +480,14 @@ submit_findings(
         if user_intent:
             user_prompt += f"# 历史\n{user_intent}"
 
-        if len(self.query_cache) > 0:
-            cached_query, cached_result = next(iter(self.query_cache.items()))
-            if cached_query != 'No result' and cached_result.strip('\n ') != tool_result.strip('\n '):
-                user_prompt += f"\n\n# 上次 search_github_repos('{cached_query}') 结果\n```\n{cached_result}\n```"
-
         if tool_result:
             user_prompt += f"\n\n# 工具调用结果\n```\n{tool_result}\n```"
+
+        if not self.result_cache:
+            for idx in range(len(self.result_cache)):
+                cache_str = self.result_cache.popleft()
+                user_prompt += f'\n# 结果缓存{idx+1}\n```\n{cache_str}\n```'
+                self.result_cache.append(cache_str)
 
         logger.info(f"注入提示词：\n{user_prompt}")
         return user_prompt
