@@ -43,6 +43,9 @@ class BaseAgent:
         self.temperature = temperature
         self.reasoning_effort = reasoning_effort
         self.kwargs = kwargs
+        # LLM调用速率控制：记录上次调用时间，确保至少2秒间隔
+        self._last_call_time = 0.0
+        self._call_interval = 2.0  # 调用间隔（秒）
 
     def _generate_messages(self, user_prompt: str, imgs: list[np.ndarray | Image.Image] | None = None):
         user_content = []
@@ -109,12 +112,21 @@ class BaseAgent:
 
         for attempt in range(max_retries):
             try:
+                # 实现LLM调用速率限制：确保两次调用之间至少有2秒间隔
+                current_time = time.time()
+                time_since_last_call = current_time - self._last_call_time
+                if time_since_last_call < self._call_interval:
+                    sleep_time = self._call_interval - time_since_last_call
+                    logging.info(f"LLM调用频率限制：等待 {sleep_time:.2f} 秒")
+                    time.sleep(sleep_time)
+                self._last_call_time = time.time()  # 更新最后调用时间
+
                 # 这里假设使用的是 OpenAI 或兼容的 API SDK
                 response = self.llm_client.chat.completions.create(
                     model=self.model_name,
                     messages=self._generate_messages(user_prompt, imgs),
                     temperature=self.temperature,
-                    reasoning_effort=self.reasoning_effort
+                    reasoning_effort=self.reasoning_effort,
                     **self.kwargs
                     # response_format={ "type": "json_object" } # 如果模型支持强制 JSON 模式，可以开启
                 )
@@ -157,6 +169,15 @@ class BaseAgent:
 
         for attempt in range(max_retries):
             try:
+                # 实现LLM调用速率限制：确保两次调用之间至少有2秒间隔
+                current_time = time.time()
+                time_since_last_call = current_time - self._last_call_time
+                if time_since_last_call < self._call_interval:
+                    sleep_time = self._call_interval - time_since_last_call
+                    logging.info(f"LLM调用频率限制（流式）：等待 {sleep_time:.2f} 秒")
+                    time.sleep(sleep_time)
+                self._last_call_time = time.time()  # 更新最后调用时间
+
                 # 这里假设使用的是 OpenAI 或兼容的 API SDK
                 stream = self.llm_client.chat.completions.create(
                     model=self.model_name,
