@@ -2,6 +2,7 @@
 from tools.registry import ToolRegistry
 from tools.cv_wrappers import *
 from tools.skimage_wrappers import *
+from tools.learning_wrappers import *
 
 # 1. 实例化注册表
 global_registry = ToolRegistry()
@@ -413,12 +414,23 @@ global_registry.register(
 #     name="Zero_DCE_Enhance",
 #     func=safe_zero_dce,
 #     description=(
-#         "基于深度学习的轻量级低照度增强算法。不同于传统的直方图均衡化，"
+#         "基于深度学习的轻量级低照度增强算法。"
 #         "它通过预测非线性增强曲线来提升图像亮度，能够有效避免过曝并抑制暗部噪声。"
-#         "特别适用于夜间拍摄或逆光场景的图像修复。"
+#         "只适用于夜间拍摄或逆光场景的图像修复。"
 #         "只支持彩色图像。"
 #     ),
-#     params_schema={}
+#     params_schema={
+#         "cache": {
+#             "type": "dict",
+#             "description": "单例模式使用的缓存字典"
+#         },
+#         "device": {
+#             "type": "str",
+#             "description": "推理设备"
+#         }
+#     },
+#     requires_learning=True,
+#     performance="slower"
 # )
 
 global_registry.register(

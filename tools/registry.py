@@ -203,7 +203,8 @@ class ToolRegistry:
         func: Callable, 
         description: str, 
         params_schema: dict,
-        performance: Literal['very fast', 'faster', 'fast', 'medium', 'slow', 'slower', 'very slow', 'slowest']
+        performance: Literal['very fast', 'faster', 'fast', 'medium', 'slow', 'slower', 'very slow', 'slowest'],
+        requires_learning: bool = False
     ):
         """
         注册一个 CV 函数及其参数范围
@@ -231,7 +232,8 @@ class ToolRegistry:
                 "name": name,
                 "description": description,
                 "parameters": params_schema,
-                "cost": performance
+                "cost": performance,
+                "requires_learning": requires_learning
             },
         }
 

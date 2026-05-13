@@ -72,7 +72,7 @@ class ToolMakerAgent(BaseAgent):
 ## 2. 算子签名与规范
 * 函数名必须以 `safe_` 开头，例如：`def safe_cyberpunk_filter(...)`
 * 第一个参数**必须**是输入图像：`img: np.ndarray`。
-* 函数会被多次运行，如果有重复使用的重加载内容，必须暴露 `cache: dict = {}` 入参。
+* 函数会被多次运行，如果有重复使用的重加载内容，必须暴露 `cache: dict | None = None` 入参。
   - 利用`dict`的引用传递，使用单例模式设计，把重复使用的内容存储在特定的键值对中。
   - 键必须以当前算子名称作为前缀，正确: `cache['anime_style_v1_model']`，错误：`cache['model']`
   - 仅允许缓存模型实例（如 nn.Module, Pipeline）、分词器（Tokenizer）、处理器（Processor）等关键实例。**严禁** 将任何图像数据、Tensor 张量等中间结果放入 cache。
@@ -123,6 +123,7 @@ class ToolMakerAgent(BaseAgent):
         "type": "dict",
         "description": "单例模式使用的缓存字典"
       },
+      // 如果编写深度学习工具，必须包含下列参数
       "device": {
         "type": "str",
         "description": "推理设备，如 cpu/cuda/mps/xpu/npu"
