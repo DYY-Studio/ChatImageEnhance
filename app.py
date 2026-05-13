@@ -145,6 +145,23 @@ def get_allowed_search_sources(
         return ("github",)
     return ("github", "huggingface", "modelscope")
 
+def unload_models():
+    devices = set([
+        (
+            next(model_cache['model'].parameters()).device.type
+            if isinstance(model_cache, dict)
+            else next(model_cache.parameters()).device.type
+        )
+        for model_cache in get_model_cache().values()
+    ])
+    get_model_cache().clear()
+    for device in devices:
+        if device != 'cpu':
+            if (device_module := getattr(torch, device, False)):
+                if (empty_cache := getattr(device_module, 'empty_cache', False)):
+                    empty_cache()
+    gc.collect()
+
 with st.sidebar:
     st.header("设置")
     with st.expander("基本", expanded=True):
@@ -189,21 +206,7 @@ with st.sidebar:
             st.session_state['device_learning_process'] = "cpu"
             st.session_state['process_profile'] = "balanced"
             if st.button("释放预载入模型", help="释放预载入到内存的模型", width='stretch', disabled=len(get_model_cache()) == 0):
-                devices = set([
-                    (
-                        next(model_cache['model'].parameters()).device.type
-                        if isinstance(model_cache, dict)
-                        else next(model_cache.parameters()).device.type
-                    )
-                    for model_cache in get_model_cache().values()
-                ])
-                get_model_cache().clear()
-                gc.collect()
-                for device in devices:
-                    if device != 'cpu':
-                        if (device_module := getattr(torch, device, False)):
-                            if (empty_cache := getattr(device_module, 'empty_cache', False)):
-                                empty_cache()
+                unload_models()
 
     with st.expander("模型", expanded=True):
         api_url = st.text_input(
@@ -481,6 +484,7 @@ else:
     st.session_state['evaluator'] = None
     load_bgr_img_from_file.clear()
     get_thumbnail_img.clear()
+    unload_models()
     get_evaluator.clear()
     get_thumb_evaluator.clear()
     st.stop()
