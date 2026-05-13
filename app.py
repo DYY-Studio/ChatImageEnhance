@@ -201,8 +201,8 @@ with st.sidebar:
                 gc.collect()
                 for device in devices:
                     if device != 'cpu':
-                        if (device_module := getattr(torch, device)) is not None:
-                            if (empty_cache := getattr(device_module, 'empty_cache')) is not None:
+                        if (device_module := getattr(torch, device, False)):
+                            if (empty_cache := getattr(device_module, 'empty_cache', False)):
                                 empty_cache()
 
     with st.expander("模型", expanded=True):
