@@ -410,29 +410,6 @@ global_registry.register(
     performance="very fast"
 )
 
-# global_registry.register(
-#     name="Zero_DCE_Enhance",
-#     func=safe_zero_dce,
-#     description=(
-#         "基于深度学习的轻量级低照度增强算法。"
-#         "它通过预测非线性增强曲线来提升图像亮度，能够有效避免过曝并抑制暗部噪声。"
-#         "只适用于夜间拍摄或逆光场景的图像修复。"
-#         "只支持彩色图像。"
-#     ),
-#     params_schema={
-#         "cache": {
-#             "type": "dict",
-#             "description": "单例模式使用的缓存字典"
-#         },
-#         "device": {
-#             "type": "str",
-#             "description": "推理设备"
-#         }
-#     },
-#     requires_learning=True,
-#     performance="slower"
-# )
-
 global_registry.register(
     name="NL_Means_Denoising",
     func=safe_nl_means_denoise,
@@ -676,6 +653,79 @@ global_registry.register(
 #     },
 #     performance="slowest"
 # )
+
+global_registry.register(
+    name="Zero_DCE_Enhance",
+    func=safe_zero_dce,
+    description=(
+        "基于深度学习的轻量级低照度增强算法。"
+        "它通过预测非线性增强曲线来提升图像亮度。"
+        "只适用于低照度的夜间拍摄或逆光场景的图像修复。"
+        "只支持彩色图像。"
+        "不包含降噪。"
+    ),
+    params_schema={
+        "cache": {
+            "type": "dict",
+            "description": "单例模式使用的缓存字典"
+        },
+        "device": {
+            "type": "str",
+            "description": "推理设备"
+        }
+    },
+    requires_learning=True,
+    performance="slower"
+)
+
+global_registry.register(
+    name="SCI_Low_Light_Enhance",
+    func=safe_sci_enhance,
+    description=(
+        "基于深度学习的超轻量级低照度增强算法。"
+        "它通过自校准光照学习来提升图像亮度。"
+        "只适用于低照度的夜间拍摄或逆光场景的图像修复。"
+        "只支持彩色图像。"
+        "不包含降噪。"
+    ),
+    params_schema={
+        "cache": {
+            "type": "dict",
+            "description": "单例模式使用的缓存字典"
+        },
+        "device": {
+            "type": "str",
+            "description": "推理设备"
+        }
+    },
+    requires_learning=True,
+    performance="slow"
+)
+
+global_registry.register(
+    name="FFDNet_Denoise",
+    func=safe_ffdnet_denoise,
+    description=(
+        "基于深度学习的轻量级降噪算法。"
+    ),
+    params_schema={
+        "noise_level": {
+            "type": "float",
+            "range": [0.0, 50.0],
+            "description": "降噪强度"
+        },
+        "cache": {
+            "type": "dict",
+            "description": "单例模式使用的缓存字典"
+        },
+        "device": {
+            "type": "str",
+            "description": "推理设备"
+        }
+    },
+    requires_learning=True,
+    performance="slower"
+)
 
 global_registry.load_custom_tools()
 
