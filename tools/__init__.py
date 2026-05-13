@@ -655,12 +655,13 @@ global_registry.register(
 # )
 
 global_registry.register(
-    name="Zero_DCE_Enhance",
+    name="Zero_DCE_Ext_Enhance",
     func=safe_zero_dce,
     description=(
         "基于深度学习的轻量级低照度增强算法。"
         "它通过预测非线性增强曲线来提升图像亮度。"
         "只适用于低照度的夜间拍摄或逆光场景的图像修复。"
+        "严禁用于标准曝光图像。"
         "只支持彩色图像。"
         "不包含降噪。"
     ),
@@ -685,6 +686,7 @@ global_registry.register(
         "基于深度学习的超轻量级低照度增强算法。"
         "它通过自校准光照学习来提升图像亮度。"
         "只适用于低照度的夜间拍摄或逆光场景的图像修复。"
+        "严禁用于标准曝光图像。"
         "只支持彩色图像。"
         "不包含降噪。"
     ),
