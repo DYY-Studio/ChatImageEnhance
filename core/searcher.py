@@ -380,6 +380,10 @@ class Searcher:
                 return
             
             thinks += f"调用{times}: {content['tool']}, {json.dumps(content['params'], ensure_ascii=False)}"
+
+            if content.get('cache', False):
+                self.searcher.result_cache.append(tool_result)
+
             if (not github_search_available) and content['tool'].endswith("_github"):
                 tool_result = "Tool Use Error: GitHub Search API limit reached"
             else:
