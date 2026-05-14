@@ -23,12 +23,21 @@ def render_toolmaker(orch: Orchestrator):
 
             tool_status.update(state='running')
             if search_container:
+                allow_learning_process = bool(st.session_state.get("enable_learning_process", False))
+                process_operator_preference = str(
+                    st.session_state.get("process_operator_preference", "traditional_only")
+                )
+                allowed_search_sources = (
+                    ("github", "huggingface", "modelscope")
+                    if allow_learning_process and process_operator_preference != "traditional_only" else
+                    ("github",)
+                )
                 searcher = Searcher(
                     client, st.session_state.selected_model,
                     github_token=st.session_state.github_token,
                     huggingface_token=st.session_state.huggingface_token,
                     modelscope_token=st.session_state.modelscope_token,
-                    allowed_sources=("github", "huggingface", "modelscope")
+                    allowed_sources=allowed_search_sources
                 )
                 search_result = StSearch(
                     searcher, tool_request, search_container, 

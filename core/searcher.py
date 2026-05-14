@@ -415,7 +415,7 @@ class Searcher:
                     yield f"SEARCH.CONTENT.{times}", chunk
                 elif t == "FINISH":
                     content = chunk
-                    yield f"SEARCH.STEP.FINISH", content['think']
+                    yield f"SEARCH.STEP.FINISH", content.get('think')
 
             thinks += f"\n运行{times}: {content['think']}"
             yield f"THINK.{times}", content['think']
