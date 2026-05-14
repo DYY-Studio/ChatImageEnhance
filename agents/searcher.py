@@ -324,7 +324,7 @@ class SearcherAgent(BaseAgent):
         enabled_sources = sorted(self.allowed_sources)
         disabled_sources = [s for s in ("github", "huggingface", "modelscope") if s not in self.allowed_sources]
         source_policy = (
-            f"可用检索源: web, {', '.join(enabled_sources)}。\n"
+            f"可用检索源: {', '.join(enabled_sources)}。\n"
             + (
                 f"禁用检索源: {', '.join(disabled_sources)}。你绝对不能调用这些来源对应的任何工具。"
                 if disabled_sources else
@@ -340,7 +340,7 @@ class SearcherAgent(BaseAgent):
 # Objective
 根据用户的自然语言需求（例如：“寻找一段可以将图片卡通化的代码”或“找一个可以将图片动漫化的开源模型”），在 GitHub、Hugging Face 或 ModelScope 上定位最佳仓库/模型，提取可运行的核心算法或推理管道函数。
 运行时来源策略：
-$SOURCE_POLICY$
+web, $SOURCE_POLICY$
 
 # Available Tools
 你必须严格按照逻辑顺序使用以下工具：
