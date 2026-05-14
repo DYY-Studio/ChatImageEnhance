@@ -729,6 +729,27 @@ global_registry.register(
     performance="slower"
 )
 
+global_registry.register(
+    name="SepLUT_Retouch",
+    func=safe_seplut_retouch,
+    description=(
+        "基于深度学习的超轻量级调光调色模型。"
+        "通过生成1D和3D LUT实现曝光和色彩微调，实现HDR视觉效果。"
+    ),
+    params_schema={
+        "cache": {
+            "type": "dict",
+            "description": "单例模式使用的缓存字典"
+        },
+        "device": {
+            "type": "str",
+            "description": "推理设备"
+        }
+    },
+    requires_learning=True,
+    performance="slow"
+)
+
 global_registry.load_custom_tools()
 
 __all__ = ["global_registry"] # 向全局暴露该注册

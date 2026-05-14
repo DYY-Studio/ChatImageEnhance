@@ -143,3 +143,149 @@ def safe_ffdnet_denoise(
     finally:
         if 'input_tensor' in locals(): del input_tensor
         if 'enhanced_tensor' in locals(): del enhanced_tensor
+
+from models.SepLUT import SepLUTGenerator, apply_lut1d_opencv, apply_lut3d_pil
+def safe_seplut_retouch(
+    img: np.ndarray, 
+    cache: dict | None = None, 
+    device: str = 'cpu'
+):
+    calc_size: int = 512
+    try:
+        h_high, w_high = img.shape[:2]
+        scale = min(calc_size / h_high, calc_size / w_high)
+        
+        if scale < 1.0:
+            new_w, new_h = int(w_high * scale), int(h_high * scale)
+            img_lowres = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        else:
+            img_lowres = img.copy()
+
+        input_tensor = torch.from_numpy(img_lowres / 255.0).float().permute(2, 0, 1).unsqueeze(0).to(device)
+
+        seplut_model = cache.get("seplut_model") if cache is not None else None
+        if seplut_model is None:
+            seplut_model = SepLUTGenerator(n_base_feats=8, n_vertices_1d=17, n_vertices_3d=17)
+            for k, v in seplut_model.named_parameters():
+                v.requires_grad = False
+
+            seplut_model.to(device)
+            seplut_model.eval()
+            
+            state_dict = torch.load(
+                str(get_executable_dir() / "models/SepLUT-FiveK-sRGB-M8#3D17#1D17.pth"),
+                map_location=device, 
+                weights_only=True
+            )['state_dict']
+            seplut_model.load_state_dict(state_dict)
+            
+            if cache is not None: cache["seplut_model"] = seplut_model
+
+        with torch.inference_mode():
+            enhanced_1d_lut, enhanced_3d_lut = seplut_model(input_tensor)
+
+        result = apply_lut3d_pil(apply_lut1d_opencv(img, enhanced_1d_lut), enhanced_3d_lut)
+
+        return result
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise RuntimeError(f"SepLUT processing failed: {str(e)}")
+
+    finally:
+        if 'input_tensor' in locals(): del input_tensor
+        if 'img_lowres' in locals(): del img_lowres
+
+from modelscope.pipelines import pipeline
+from modelscope.utils.constant import Tasks
+from modelscope.outputs import OutputKeys
+def _modelscope_img_pipeline(
+    img: np.ndarray,
+    model_name: str,
+    cache_key: str,
+    pipeline_task: str,
+    caller_name: str,
+    cache: dict | None = None,
+    device: str = 'cpu'
+):
+    try:
+        image_pipeline = None
+        try:
+            image_pipeline = pipeline(
+                pipeline_task, 
+                model_name,
+                device=device
+            )
+        except:
+            image_pipeline = pipeline(
+                pipeline_task, 
+                model_name,
+                device='cpu'
+            )
+        if cache is not None and cache_key not in cache:
+            cache[cache_key] = image_pipeline
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        result_rgb = image_pipeline(img_rgb)[OutputKeys.OUTPUT_IMG]
+        result = cv2.cvtColor(result_rgb, cv2.COLOR_RGB2BGR)
+        return result
+    except Exception as e:
+        raise RuntimeError(f'{caller_name} failed: {str(e)}')
+    finally:
+        if 'img_rgb' in locals(): del img_rgb
+        if 'result_rgb' in locals(): del result_rgb
+
+def safe_nafnet_denoise(
+    img: np.ndarray, 
+    cache: dict | None = None, 
+    device: str = 'cpu'
+):
+    model_name = 'iic/cv_nafnet_image-denoise_sidd'
+    cache_key = 'nafnet_denoise_pipeline'
+    pipeline_task = Tasks.image_denoising
+    return _modelscope_img_pipeline(
+        img=img, model_name=model_name, cache_key=cache_key,
+        pipeline_task=pipeline_task, caller_name='NAFNet denoise',
+        cache=cache, device=device
+    )
+
+def safe_nafnet_demotionblur(
+    img: np.ndarray, 
+    cache: dict | None = None, 
+    device: str = 'cpu'
+):
+    model_name = 'iic/cv_nafnet_image-deblur_gopro'
+    cache_key = 'nafnet_deblur_pipeline'
+    pipeline_task = Tasks.image_deblurring
+    return _modelscope_img_pipeline(
+        img=img, model_name=model_name, cache_key=cache_key,
+        pipeline_task=pipeline_task, caller_name='NAFNet demotionblur',
+        cache=cache, device=device
+    )
+
+def safe_nafnet_demotionblur_and_compress(
+    img: np.ndarray, 
+    cache: dict | None = None, 
+    device: str = 'cpu'
+):
+    model_name = 'iic/cv_nafnet_image-deblur_reds'
+    cache_key = 'nafnet_deblur_compress_compressed_pipeline'
+    pipeline_task = Tasks.image_deblurring
+    return _modelscope_img_pipeline(
+        img=img, model_name=model_name, cache_key=cache_key,
+        pipeline_task=pipeline_task, caller_name='NAFNet demotionblur and compress',
+        cache=cache, device=device
+    )
+
+def safe_uhdm_demoireing(
+    img: np.ndarray, 
+    cache: dict | None = None, 
+    device: str = 'cpu'
+):
+    model_name = 'iic/cv_uhdm_image-demoireing'
+    cache_key = 'uhdm_image_demoireing_pipeline'
+    pipeline_task = Tasks.image_demoireing
+    return _modelscope_img_pipeline(
+        img=img, model_name=model_name, cache_key=cache_key,
+        pipeline_task=pipeline_task, caller_name='UHDM demoireing',
+        cache=cache, device=device
+    )
