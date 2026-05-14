@@ -19,6 +19,13 @@ logger = logging.getLogger("Searcher")
 
 class Searcher:
     _ALL_SOURCES: tuple[str, ...] = ("github", "huggingface", "modelscope")
+    _PREFERRED_OPENCV_PACKAGE = "opencv-contrib-python"
+    _OPENCV_PACKAGE_NAMES = {
+        "opencv-python",
+        "opencv-contrib-python",
+        "opencv-python-headless",
+        "opencv-contrib-python-headless",
+    }
 
     # 近似 from_pretrained 的“最小必需文件”过滤规则：
     # 保留权重 + 配置 + tokenizer/processor + 推理相关代码；忽略样例图、文档、测试等噪声内容。
@@ -50,6 +57,7 @@ class Searcher:
         "opencv-python": "cv2",
         "opencv-contrib-python": "cv2",
         "opencv-python-headless": "cv2",
+        "opencv-contrib-python-headless": "cv2",
         "scikit-image": "skimage",
         "pyyaml": "yaml",
         "huggingface-hub": "huggingface_hub",
@@ -128,6 +136,21 @@ class Searcher:
         return req
 
     @classmethod
+    def _normalize_dependency_spec(cls, dependency: str) -> str:
+        token = str(dependency or "").strip()
+        dist_name = cls._extract_dist_name(token)
+        canonical = cls._canonical_dist_name(dist_name)
+        if canonical not in cls._OPENCV_PACKAGE_NAMES or canonical == cls._PREFERRED_OPENCV_PACKAGE:
+            return token
+        return re.sub(
+            rf"^\s*{re.escape(dist_name)}",
+            cls._PREFERRED_OPENCV_PACKAGE,
+            token,
+            count=1,
+            flags=re.IGNORECASE
+        ).strip()
+
+    @classmethod
     def _resolve_import_from_installed_dist(cls, dist_name: str) -> str | None:
         if not dist_name:
             return None
@@ -153,8 +176,8 @@ class Searcher:
             pass
         return None
 
-    @staticmethod
-    def _split_dependencies(dependencies: str | None) -> list[str]:
+    @classmethod
+    def _split_dependencies(cls, dependencies: str | None) -> list[str]:
         if not dependencies:
             return []
 
@@ -171,7 +194,7 @@ class Searcher:
                 r"[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_.\-,]+\])?(?:\s*(?:==|!=|>=|<=|>|<|~=)\s*[A-Za-z0-9*+_.-]+)?",
                 token
             ):
-                sanitized.append(token.replace(" ", ""))
+                sanitized.append(cls._normalize_dependency_spec(token.replace(" ", "")))
         return sanitized
 
     @classmethod

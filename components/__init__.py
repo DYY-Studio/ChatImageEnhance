@@ -47,6 +47,7 @@ def _package_to_import_name(package: str) -> str | None:
         "opencv-python": "cv2",
         "opencv-contrib-python": "cv2",
         "opencv-python-headless": "cv2",
+        "opencv-contrib-python-headless": "cv2",
         "scikit-image": "skimage",
         "pyyaml": "yaml",
         "huggingface-hub": "huggingface_hub",

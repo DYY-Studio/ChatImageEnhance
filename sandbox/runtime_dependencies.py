@@ -2,9 +2,11 @@ import gc
 import importlib
 import importlib.metadata as importlib_metadata
 import importlib.util
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from typing import Iterable
 from types import ModuleType
 
@@ -16,11 +18,24 @@ except Exception:
 
 
 class RuntimeDependencyManager:
+    _PREFERRED_OPENCV_PACKAGE = "opencv-contrib-python"
+    _OPENCV_PACKAGE_NAMES = {
+        "opencv-python",
+        "opencv-contrib-python",
+        "opencv-python-headless",
+        "opencv-contrib-python-headless",
+    }
+    _BLOCKED_OPENCV_PACKAGES = (
+        "opencv-python",
+        "opencv-python-headless",
+        "opencv-contrib-python-headless",
+    )
     _PKG_IMPORT_ALIASES = {
         "pillow": "PIL",
         "opencv-python": "cv2",
         "opencv-contrib-python": "cv2",
         "opencv-python-headless": "cv2",
+        "opencv-contrib-python-headless": "cv2",
         "scikit-image": "skimage",
         "pyyaml": "yaml",
         "huggingface-hub": "huggingface_hub",
@@ -32,7 +47,7 @@ class RuntimeDependencyManager:
         "sentence-transformers": "sentence_transformers",
     }
     _MODULE_PACKAGE_ALIASES = {
-        "cv2": "opencv-python",
+        "cv2": _PREFERRED_OPENCV_PACKAGE,
         "pil": "pillow",
         "skimage": "scikit-image",
         "yaml": "pyyaml",
@@ -46,7 +61,7 @@ class RuntimeDependencyManager:
         "addict": "addict",
         "yaml": "pyyaml",
         "pil": "pillow",
-        "cv2": "opencv-python",
+        "cv2": _PREFERRED_OPENCV_PACKAGE,
         "skimage": "scikit-image",
         "dateutil": "python-dateutil",
         "bs4": "beautifulsoup4",
@@ -56,27 +71,24 @@ class RuntimeDependencyManager:
     }
     _DIST_COMPAT_GROUPS = {
         "opencv-python": (
-            "opencv-python",
             "opencv-contrib-python",
+            "opencv-python",
             "opencv-python-headless",
             "opencv-contrib-python-headless",
         ),
         "opencv-contrib-python": (
             "opencv-contrib-python",
-            "opencv-python",
-            "opencv-contrib-python-headless",
-            "opencv-python-headless",
         ),
         "opencv-python-headless": (
+            "opencv-contrib-python",
             "opencv-python-headless",
             "opencv-contrib-python-headless",
             "opencv-python",
-            "opencv-contrib-python",
         ),
         "opencv-contrib-python-headless": (
+            "opencv-contrib-python",
             "opencv-contrib-python-headless",
             "opencv-python-headless",
-            "opencv-contrib-python",
             "opencv-python",
         ),
     }
@@ -126,6 +138,19 @@ class RuntimeDependencyManager:
         return req
 
     @classmethod
+    def _replace_requirement_dist_name(cls, requirement: str, replacement: str) -> str:
+        dist_name = cls._extract_dist_name(requirement)
+        if not dist_name:
+            return requirement
+        return re.sub(
+            rf"^\s*{re.escape(dist_name)}",
+            replacement,
+            str(requirement),
+            count=1,
+            flags=re.IGNORECASE
+        ).strip()
+
+    @classmethod
     def _normalize_package_name(cls, package: str) -> str:
         normalized = str(package).strip()
         if not normalized:
@@ -142,6 +167,11 @@ class RuntimeDependencyManager:
                 count=1,
                 flags=re.IGNORECASE
             )
+            dist_name = cls._extract_dist_name(normalized)
+            canonical = cls._canonical_dist_name(dist_name)
+
+        if canonical in cls._OPENCV_PACKAGE_NAMES and canonical != cls._PREFERRED_OPENCV_PACKAGE:
+            normalized = cls._replace_requirement_dist_name(normalized, cls._PREFERRED_OPENCV_PACKAGE)
         return normalized
 
     @classmethod
@@ -178,6 +208,8 @@ class RuntimeDependencyManager:
             candidates.append(name)
 
         canonical = cls._canonical_dist_name(dist_name)
+        if canonical in cls._OPENCV_PACKAGE_NAMES and canonical != cls._PREFERRED_OPENCV_PACKAGE:
+            add(cls._PREFERRED_OPENCV_PACKAGE)
         add(dist_name)
         add(cls._MODULE_PACKAGE_ALIASES.get(canonical))
 
@@ -301,6 +333,12 @@ class RuntimeDependencyManager:
         if not dist_name:
             return False, ""
 
+        canonical_dist = cls._canonical_dist_name(dist_name)
+        if canonical_dist in cls._OPENCV_PACKAGE_NAMES:
+            preferred_version = cls._get_installed_version(cls._PREFERRED_OPENCV_PACKAGE)
+            if preferred_version is not None and importlib.util.find_spec("cv2"):
+                return True, cls._PREFERRED_OPENCV_PACKAGE
+
         installed_version = cls._get_installed_version(dist_name)
         if installed_version is None:
             return False, dist_name
@@ -415,6 +453,68 @@ class RuntimeDependencyManager:
 
         return prefixes
 
+    @classmethod
+    def _build_pip_install_command(
+        cls,
+        package: str,
+        constraint_path: str | None = None,
+        no_deps: bool = False
+    ) -> list[str]:
+        command = [sys.executable, "-m", "pip", "install"]
+        if no_deps:
+            command.append("--no-deps")
+        elif constraint_path:
+            command.extend(["--constraint", constraint_path])
+        command.append(package)
+        return command
+
+    @classmethod
+    def _opencv_constraint_text(cls) -> str:
+        return "\n".join(f"{package}<0" for package in cls._BLOCKED_OPENCV_PACKAGES) + "\n"
+
+    @classmethod
+    def _pip_error_mentions_blocked_opencv(cls, output: str) -> bool:
+        text = str(output or "").lower()
+        return any(package in text for package in cls._BLOCKED_OPENCV_PACKAGES)
+
+    @staticmethod
+    def _pip_output_tail(output: str, limit: int = 4000) -> str:
+        text = str(output or "").strip()
+        if len(text) <= limit:
+            return text
+        return text[-limit:]
+
+    def _run_pip_install(self, package: str, no_deps: bool = False) -> subprocess.CompletedProcess:
+        constraint_path = None
+        if not no_deps:
+            constraint_file = tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                suffix=".txt",
+                prefix="chatimageenhance-opencv-constraints-",
+                delete=False,
+            )
+            try:
+                with constraint_file:
+                    constraint_file.write(self._opencv_constraint_text())
+                constraint_path = constraint_file.name
+            except Exception:
+                try:
+                    constraint_file.close()
+                except Exception:
+                    pass
+                raise
+
+        command = self._build_pip_install_command(package, constraint_path, no_deps=no_deps)
+        try:
+            return subprocess.run(command, capture_output=True, text=True)
+        finally:
+            if constraint_path:
+                try:
+                    os.unlink(constraint_path)
+                except OSError:
+                    pass
+
     def install_packages(self, packages: Iterable[str] | None):
         if packages is None:
             return
@@ -434,17 +534,20 @@ class RuntimeDependencyManager:
                 continue
 
             self._best_effort_release_for_install(dist_name)
-            pip_command = [sys.executable, "-m", "pip", "install", package]
-            try:
-                retval = subprocess.check_call(pip_command)
-            except subprocess.CalledProcessError as e:
+            result = self._run_pip_install(package)
+            pip_output = f"{result.stdout or ''}\n{result.stderr or ''}"
+            if result.returncode != 0 and self._pip_error_mentions_blocked_opencv(pip_output):
+                result = self._run_pip_install(package, no_deps=True)
+                pip_output = f"{result.stdout or ''}\n{result.stderr or ''}"
+
+            if result.returncode != 0:
+                output_tail = self._pip_output_tail(pip_output)
+                detail = f" output={output_tail}" if output_tail else ""
                 raise RuntimeError(
                     "pip dynamic install failed. "
-                    f"package={package}; exit_code={e.returncode}. "
+                    f"package={package}; exit_code={result.returncode}.{detail} "
                     "If this is a Windows file-lock issue, restart the process and retry."
-                ) from e
-            if retval != 0:
-                raise RuntimeError(f"pip dynamic install failed: {package}")
+                )
 
             if dist_name:
                 canonical = self._canonical_dist_name(dist_name)
