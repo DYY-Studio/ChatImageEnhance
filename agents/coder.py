@@ -191,6 +191,8 @@ class CoderAgent(BaseAgent):
         - 例如：`ksize_median = trial.suggest_categorical("Median_Denoise_ksize", [3, 5, 7])`
     - 情况 B (不需要)：必须使用 **常数** 设置参数
         - 例如：`adjust_sigmoid_cutoff = 0.5`
+    - 情况 C (多工具可选 & 无可调参数)：如果工具库有多个可以实现目标的算子，并且算子 **均没有** 可调优参数，应当使用 `trial` 暴露一个可用算子列表给 Optuna
+        - 例如：`low_light_choice = trial.suggest_categorical("Low_Light_Tool_Choice", ["Zero_DCE_Ext_Enhance", "SCI_Low_Light_Enhance"])`
     - **禁止调优的参数类型**：`cache`、`device`、`model_dir`、字符串路径、模型ID等运行时/环境参数，必须使用常量或直接透传，不得 `trial.suggest_*`
 * **库访问**：你只能使用下列库：
     - 基础处理: `np` (numpy), `cv2` (opencv-contrib-python), `optuna`, `skimage` (scikit-image), `PIL` (pillow) 以及提供的算子库 `cv_wrappers`
