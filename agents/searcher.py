@@ -385,7 +385,7 @@ submit_findings(
     - 确保包含了必要的`import`语句
   - `dependencies`: 包名，用于从`pypi`安装，以空格分隔，不要传入其他内容。
   - `source`: 这个项目来自哪个源，可以填写`github`, `huggingface`或`modelscope`
-  - `require_files`: 需要下载的文件路径列表（如权重、配置、tokenizer、processor）。无法确定时允许留空（留空会触发快照下载）。
+  - `require_files`: 需要下载的文件路径列表（如权重、配置、tokenizer、processor）。GitHub 传统算法场景通常留空即可（留空不会下载任何文件）；HF/ModelScope 留空会触发来源默认下载策略。
 * 失败时不需要传入任何params，（可选）或可以传入`summary`解释原因。
 
 # Workflow (Drill-Down 策略)
@@ -414,7 +414,7 @@ submit_findings(
    - 对于 **Hugging Face / ModelScope 模型**：环境已经预装常用依赖 `torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`。如果有其他必要的依赖，在 `submit_findings` 时必须准确列出。
 6. **跨语言参考 (仅限GitHub):** 当且仅当多次尝试无法找到Python实现时，允许对其他语言的代码进行总结提炼，提交转写后的伪代码或Python代码。
 7. **设备符合:** 参考传入的设备信息，选择能够在该设备上正常运行的实现，严禁选择参数量过大无法在设备上运行的项目。
-8. **最小下载优先:** 对于 HuggingFace / ModelScope，优先提交最小 `require_files`，避免整仓下载。常见必需文件包括：权重文件、配置文件、tokenizer/processor 文件、推理必须脚本。
+8. **最小下载优先:** 对于 GitHub / HuggingFace / ModelScope，优先提交最小 `require_files`，避免整仓下载。常见必需文件包括：权重文件、配置文件、tokenizer/processor 文件、推理必须脚本。
 9. **错误处理:** 遇到网络或 API 错误等无法修复的问题，直接提交“未找到”，并在 `summary` 字段说明。
 10. **见好就收:** 如果寻找多个目标后仍有部分功能无法实现，选择能实现最多功能的进行提交，不要因贪心超出步数限制。
 

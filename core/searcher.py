@@ -9,6 +9,7 @@ import json
 import yaml
 import os
 import re
+import httpx
 import importlib.metadata as importlib_metadata
 from pathlib import Path
 
@@ -210,6 +211,51 @@ class Searcher:
         safe_repo = re.sub(r"[^A-Za-z0-9_.-]+", "__", repo_id.strip())
         return get_executable_dir() / "caches" / "model_assets" / source / safe_repo
 
+    def _download_github_file(self, repo, rel_path: str, cache_dir: Path) -> str:
+        content = repo.get_contents(rel_path)
+        if isinstance(content, list):
+            raise ValueError(f'"{rel_path}" is a directory, not a file')
+
+        local_path = cache_dir / rel_path
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            file_bytes = content.decoded_content
+        except Exception:
+            download_url = str(getattr(content, "download_url", "") or "").strip()
+            if not download_url:
+                raise
+            req = httpx.Request(
+                download_url,
+                headers={"User-Agent": "ChatImageEnhance/1.0"}
+            )
+            file_bytes = req.read()
+
+        # Git LFS 大文件在 Contents API 下通常只返回 pointer 文本，需显式报错避免误用
+        if file_bytes.startswith(b"version https://git-lfs.github.com/spec/v1"):
+            raise RuntimeError(
+                f'Cannot fetch Git LFS object for "{rel_path}" via GitHub Contents API'
+            )
+
+        with open(local_path, mode="wb") as f:
+            f.write(file_bytes)
+        return str(local_path.resolve())
+
+    def _download_github_assets(self, repo_id: str, require_files: list[str]) -> tuple[list[str], str]:
+        cache_dir = self._get_repo_cache_dir("github", repo_id)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        downloaded_files: list[str] = []
+
+        # GitHub 源默认不做任何下载；仅当明确给出 require_files 时才拉取资产
+        if not require_files:
+            return downloaded_files, str(cache_dir.resolve())
+
+        repo = self.github.get_repo(repo_id)
+        for rel_path in require_files:
+            downloaded_files.append(self._download_github_file(repo, rel_path, cache_dir))
+        return downloaded_files, str(cache_dir.resolve())
+
     def _download_hf_assets(self, repo_id: str, require_files: list[str]) -> tuple[list[str], str]:
         cache_dir = self._get_repo_cache_dir("huggingface", repo_id)
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -306,11 +352,13 @@ class Searcher:
             enriched["download_error"] = f"source_disabled:{source}"
             return enriched
 
-        if not auto_download or source not in ("huggingface", "modelscope") or not repo_id:
+        if not auto_download or source not in ("github", "huggingface", "modelscope") or not repo_id:
             return enriched
 
         try:
-            if source == "huggingface":
+            if source == "github":
+                files, folder = self._download_github_assets(repo_id, require_files)
+            elif source == "huggingface":
                 files, folder = self._download_hf_assets(repo_id, require_files)
             else:
                 files, folder = self._download_modelscope_assets(repo_id, require_files)
