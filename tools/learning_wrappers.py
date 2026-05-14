@@ -196,6 +196,47 @@ def safe_seplut_retouch(
         if 'input_tensor' in locals(): del input_tensor
         if 'img_lowres' in locals(): del img_lowres
 
+from models.ImageAdaptive3DLUT import apply_lut_to_image, load_adaptive_lut_model
+def safe_ia3dlut_retouch(
+    img: np.ndarray, 
+    cache: dict | None = None, 
+    device: str = 'cpu'
+):
+    calc_size: int = 512
+    try:
+        h_high, w_high = img.shape[:2]
+        scale = min(calc_size / h_high, calc_size / w_high)
+        
+        if scale < 1.0:
+            new_w, new_h = int(w_high * scale), int(h_high * scale)
+            img_lowres = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        else:
+            img_lowres = img.copy()
+
+        input_tensor = torch.from_numpy(img_lowres / 255.0).float().permute(2, 0, 1).unsqueeze(0).to(device)
+
+        model = cache.get("ia3dlut_model") if cache is not None else None
+        if model is None:
+            model = load_adaptive_lut_model(
+                str(get_executable_dir() / "models"),
+                device=device
+            )
+            
+            if cache is not None: cache["ia3dlut_model"] = model
+
+        result_rgb = apply_lut_to_image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), model, device)
+        result = cv2.cvtColor(result_rgb, cv2.COLOR_RGB2BGR)
+
+        return result
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise RuntimeError(f"Image Adaptive processing failed: {str(e)}")
+
+    finally:
+        if 'input_tensor' in locals(): del input_tensor
+        if 'img_lowres' in locals(): del img_lowres
+
 from modelscope.pipelines import pipeline
 from modelscope.utils.constant import Tasks
 from modelscope.outputs import OutputKeys
@@ -208,7 +249,7 @@ def _modelscope_img_pipeline(
     caller_name: str,
     cache: dict | None = None,
     device: str = 'cpu',
-    cvt_input_color: bool = True
+    cvt_output_color: bool = True
 ):
     try:
         image_pipeline = None
@@ -228,9 +269,9 @@ def _modelscope_img_pipeline(
             )
         if cache is not None and cache_key not in cache:
             cache[cache_key] = image_pipeline
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) if cvt_input_color else img.copy()
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         result_rgb = image_pipeline(img_rgb)[OutputKeys.OUTPUT_IMG]
-        result = cv2.cvtColor(result_rgb, cv2.COLOR_RGB2BGR)
+        result = cv2.cvtColor(result_rgb, cv2.COLOR_RGB2BGR) if cvt_output_color else result_rgb.copy()
         return result
     except Exception as e:
         raise RuntimeError(f'{caller_name} failed: {str(e)}')
@@ -291,5 +332,52 @@ def safe_uhdm_demoireing(
     return _modelscope_img_pipeline(
         img=img, model_name=model_name, cache_key=cache_key,
         pipeline_task=pipeline_task, caller_name='UHDM demoireing',
-        cache=cache, device=device, cvt_input_color=False
+        cache=cache, device=device, cvt_output_color=False
     )
+
+def safe_csrnet_color_enhance(
+    img: np.ndarray, 
+    cache: dict | None = None, 
+    device: str = 'cpu'
+):
+    from modelscope.models import Model
+    from modelscope.preprocessors import Preprocessor
+    model_name = 'iic/cv_csrnet_image-color-enhance-models'
+    cache_key = 'deeplpfnet_image-color-enhance_pipeline'
+
+    try:
+        model = cache.get(cache_key) if cache is not None else None
+        if model is None:
+            model = Model.from_pretrained(model_name).to(device)
+            model.eval()
+            for k, v in model.named_parameters():
+                v.requires_grad = False
+
+            model.to(device)
+            model.eval()
+            
+            if cache is not None: cache[cache_key] = model
+        
+        preprocesser = cache.get(f"{cache_key}_pre") if cache is not None else None
+        if preprocesser is None:
+            preprocesser = Preprocessor.from_pretrained(model_name)
+
+            if cache is not None: cache[f"{cache_key}_pre"] = model
+
+        input_tensor = torch.from_numpy(preprocesser(img) / 255.0).float()
+        input_tensor = input_tensor.permute(2, 0, 1).unsqueeze(0).to(device)
+
+        with torch.inference_mode():
+            enhanced_tensor = model._inference_forward(input_tensor)['outputs']
+
+        result_tensor = enhanced_tensor.detach().cpu().squeeze(0).permute(1, 2, 0)
+        result_array = (result_tensor.numpy() * 255.0).clip(0, 255).astype(np.uint8)
+
+        return result_array
+
+    except Exception as e:
+        raise RuntimeError(f"CSRNet processing failed: {str(e)}")
+
+    finally:
+        if 'input_tensor' in locals(): del input_tensor
+        if 'enhanced_tensor' in locals(): del enhanced_tensor

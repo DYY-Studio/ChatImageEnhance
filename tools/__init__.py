@@ -660,6 +660,7 @@ global_registry.register(
     description=(
         "基于深度学习的轻量级低照度增强算法。"
         "它通过预测非线性增强曲线来提升图像亮度。"
+        "不需要完整分辨率图像进入网络，占用小速度快。"
         "只适用于低照度的夜间拍摄或逆光场景的图像修复。"
         "严禁用于标准曝光图像。"
         "只支持彩色图像。"
@@ -685,6 +686,7 @@ global_registry.register(
     description=(
         "基于深度学习的超轻量级低照度增强算法。"
         "它通过自校准光照学习来提升图像亮度。"
+        "不需要完整分辨率图像进入网络，占用小速度快。"
         "只适用于低照度的夜间拍摄或逆光场景的图像修复。"
         "严禁用于标准曝光图像。"
         "只支持彩色图像。"
@@ -709,6 +711,7 @@ global_registry.register(
     func=safe_ffdnet_denoise,
     description=(
         "基于深度学习的轻量级降噪算法。"
+        "网络较为简单，内存/显存占用小，可以处理大分辨率图像。"
     ),
     params_schema={
         "noise_level": {
@@ -735,6 +738,10 @@ global_registry.register(
     description=(
         "基于深度学习的超轻量级调光调色模型。"
         "通过预测1D和3D LUT实现曝光和色彩微调，实现HDR视觉效果。"
+        "不需要完整分辨率图像进入网络，占用小速度快。"
+        "甚至快于部分传统CV算子。"
+        "适用于大部分曝光情况。"
+        "不包含降噪。"
     ),
     params_schema={
         "cache": {
@@ -747,14 +754,42 @@ global_registry.register(
         }
     },
     requires_learning=True,
-    performance="slow"
+    performance="medium"
+)
+
+global_registry.register(
+    name="ImgAdaptive_3DLUT_Retouch",
+    func=safe_ia3dlut_retouch,
+    description=(
+        "基于深度学习的超轻量级调光调色模型。"
+        "通过预测3D LUT实现曝光和色彩微调，实现HDR视觉效果。"
+        "不需要完整分辨率图像进入网络，占用小速度快。"
+        "甚至快于部分传统CV算子。"
+        "适用于大部分曝光情况。"
+        "不包含降噪。"
+    ),
+    params_schema={
+        "cache": {
+            "type": "dict",
+            "description": "单例模式使用的缓存字典"
+        },
+        "device": {
+            "type": "str",
+            "description": "推理设备"
+        }
+    },
+    requires_learning=True,
+    performance="medium"
 )
 
 global_registry.register(
     name="NAFNet_Denoise",
     func=safe_nafnet_denoise,
     description=(
-        "基于深度学习的轻量级降噪模型。"
+        "基于深度学习的中量级降噪模型。"
+        "网络架构在CPU上执行非常慢。"
+        "处理低照度图像会出现问题，不应当在该类图像上直接使用。"
+        "运算速度较慢，但是内存/显存占用不高，可以用于大分辨率图像。"
     ),
     params_schema={
         "cache": {
@@ -774,7 +809,10 @@ global_registry.register(
     name="NAFNet_Deblur",
     func=safe_nafnet_demotionblur,
     description=(
-        "基于深度学习的轻量级去运动模糊模型。"
+        "基于深度学习的中量级去运动模糊模型。"
+        "网络架构在CPU上执行非常慢。"
+        "处理低照度图像会出现问题，不应当在该类图像上直接使用。"
+        "运算速度较慢，但是内存/显存占用不高，可以用于大分辨率图像。"
     ),
     params_schema={
         "cache": {
@@ -794,7 +832,32 @@ global_registry.register(
     name="UHDM_Demoireing",
     func=safe_uhdm_demoireing,
     description=(
-        "基于深度学习的轻量级去显示器摩尔纹模型。"
+        "基于深度学习的中量级去显示器摩尔纹模型。"
+        "网络结构原因，在CPU上运行特别慢。"
+        "内存/显存占用高，运行速度较慢。"
+        "不能用于极大分辨率图像，有Out Of Memory风险。"
+    ),
+    params_schema={
+        "cache": {
+            "type": "dict",
+            "description": "单例模式使用的缓存字典"
+        },
+        "device": {
+            "type": "str",
+            "description": "推理设备"
+        }
+    },
+    requires_learning=True,
+    performance="very slow"
+)
+
+global_registry.register(
+    name="CSRNet_Retouch",
+    func=safe_csrnet_color_enhance,
+    description=(
+        "基于深度学习的中量级调光调色模型。"
+        "需要全分辨率图像进入网络进行运算，内存/显存占用较大，速度尚可。"
+        "不能用于极大分辨率图像，有Out Of Memory风险。"
     ),
     params_schema={
         "cache": {
