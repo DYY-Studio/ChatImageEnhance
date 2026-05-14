@@ -441,6 +441,25 @@ def get_evaluator(raw_array: np.ndarray):
 def get_thumb_evaluator(raw_array: np.ndarray, size: tuple[int, int]):
     return Evaluator(raw_array, get_model_cache())
 
+def append_run_error_message(error_text: str):
+    error_text = str(error_text or "运行失败，未返回详细错误。").strip()
+    summary = error_text
+    details = ""
+    marker = "\n\n错误详情：\n"
+    if marker in error_text:
+        summary, details = error_text.split(marker, maxsplit=1)
+        summary = summary.strip()
+        details = details.strip()
+
+    error_msg = {
+        "role": "assistant",
+        "content": summary,
+        "error": True,
+        "error_details": details,
+    }
+    st.session_state.messages.append(error_msg)
+    render_message_content(error_msg, len(st.session_state.messages) - 1)
+
 # 如果有历史结果，并在界面顶部展示原图与当前最佳进度的对比
 if upload:
     img_bgr = load_bgr_img_from_file(upload)
@@ -619,6 +638,15 @@ if user_feedback:
                     evaluate_handler.thinking_end()
                 elif t == "CODE_EVALUATE.END":
                     evaluate_handler.content_end()
+                elif t == "CODE_EVALUATE.ERROR_RETRY":
+                    eva_status.update(label="📝 评价策略验证失败，正在重试", state="error")
+                    with eva_thinking_container:
+                        st.warning(body)
+                elif t == "FATAL_ERROR":
+                    eva_status.update(state="error")
+                    main_status.update(label="本轮运行失败", state="error")
+                    append_run_error_message(body)
+                    st.stop()
                 elif t == "FINISH":
                     eva_status.update(state="complete")
                     evaluate_code_str = body
@@ -643,7 +671,7 @@ if user_feedback:
                     max_side=process_img_max_side if low_res_process else 0
                 ):
                     if t == "CODE.START":
-                        pass
+                        code_status.update(label="🧠 LLM 调整增强代码", state="running")
                     elif t == "CODE.REASONING":
                         coder_handler.thinking_chunk(body)
                     elif t == "CODE.STREAM":
@@ -652,15 +680,28 @@ if user_feedback:
                     elif t == "CODE.END":
                         coder_handler.content_end()
                         process_code_str = body
+                    elif t == "CODE.ERROR":
+                        code_status.update(label="🧠 增强代码执行失败，正在反馈给 LLM 重试", state="error")
+                        with code_thinking_container:
+                            st.warning(body)
                     elif t == "OPTUNA.START":
                         optuna_status.update(state="running")
+                    elif t == "OPTUNA.END":
+                        optuna_status.update(state="complete")
+                    elif t == "FATAL_ERROR":
+                        code_status.update(state="error")
+                        optuna_status.update(state="error")
+                        main_status.update(label="本轮运行失败", state="error")
+                        append_run_error_message(body)
+                        st.stop()
                     elif t == "FINISH":
                         optuna_status.update(state="complete")
                         # ===== [修改] 解包返回值，获取实际trial数 =====
                         best_bgr, best_params, log, actual_n_trials = body
 
                         coding_finish = True
-                    
+                        break
+
                     elif t == "TOOL_REQUEST":
                         code_status.update(state='error')
                         tool_request = body['description']
@@ -738,12 +779,19 @@ if user_feedback:
                                 st.info("完成！")
                             toolmaker_handler.content_end()
                         elif t == "ERROR_RETRY":
+                            with toolmaker_placeholder:
+                                st.warning(body)
                             with main_container:
                                 with tool_status:
                                     with (toolmaker_status := st.status("⌨️ 编写工具", state="error")):
                                         toolmaker_container = st.container(border=False)
                             
                             toolmaker_handler = StStreamResHandler(toolmaker_status, toolmaker_container)
+                        elif t == "FATAL_ERROR":
+                            tool_status.update(state="error")
+                            main_status.update(label="本轮运行失败", state="error")
+                            append_run_error_message(body)
+                            st.stop()
                         elif t == "FINISH":
                             body["additional_imports"] = runtime_imports or []
                             body["additional_packages"] = runtime_packages or []
@@ -751,7 +799,8 @@ if user_feedback:
 
         # --- 收尾与状态更新 ---
         if best_bgr is None:
-            st.error("此轮运行失败，请尝试重新输入或更改要求。")
+            main_status.update(label="本轮运行失败", state="error")
+            append_run_error_message("此轮运行失败：未得到可用增强结果。请调整要求后重试。")
             st.stop()
         else:
             # ===== [新增] 根据实际trial数显示不同消息 =====

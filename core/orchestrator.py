@@ -46,6 +46,54 @@ class Orchestrator:
         self.allow_learning_process = bool(allow_learning_process)
         self.optimizer = None
 
+    _UNFIXABLE_ERROR_MARKERS = (
+        "LLM 调用最终失败",
+        "LLM 调用失败",
+        "程序错误:",
+        "APIConnectionError",
+        "APITimeoutError",
+        "APIStatusError",
+        "RateLimitError",
+        "pip dynamic install failed",
+        "Unsupported dependency source",
+        "Unsafe dependency option",
+        "Invalid dependency spec",
+        "Empty dependency spec",
+        "Permission denied",
+        "No space left",
+    )
+
+    @staticmethod
+    def _exception_details(exc: Exception) -> str:
+        return traceback.format_exc()
+
+    @staticmethod
+    def _compact_error(error: str | None, limit: int = 1200) -> str:
+        text = str(error or "").strip()
+        if len(text) <= limit:
+            return text
+        return text[-limit:]
+
+    @classmethod
+    def _is_auto_fixable_error(cls, error: Exception | str | None) -> bool:
+        text = str(error or "")
+        if not text.strip():
+            return False
+        return not any(marker in text for marker in cls._UNFIXABLE_ERROR_MARKERS)
+
+    @classmethod
+    def _fatal_error_message(cls, stage: str, error: str | None) -> str:
+        detail = cls._compact_error(error)
+        return (
+            f"{stage}失败，且该错误无法通过重写 LLM 生成代码自动修复，已停止运行。\n\n"
+            f"错误详情：\n{detail or '无详细错误信息'}"
+        )
+
+    @classmethod
+    def _retry_error_message(cls, stage: str, error: str | None) -> str:
+        detail = cls._compact_error(error)
+        return f"{stage}失败，已把错误反馈给 LLM 重新生成。\n\n{detail}"
+
     @staticmethod
     def _filter_learning_dependencies(
         imports: Iterable[str] | None,
@@ -97,7 +145,7 @@ class Orchestrator:
     ) -> Generator[tuple[
         Literal[
             "CODE_TOOL.START", "CODE_TOOL.END", "CODE_TOOL.STREAM", "CODE_TOOL.TEST",
-            "CODE_TOOL.REASONING", "FINISH", "ERROR_RETRY"
+            "CODE_TOOL.REASONING", "FINISH", "ERROR_RETRY", "FATAL_ERROR"
         ], 
         str | dict | None
     ], None, None]:
@@ -148,22 +196,36 @@ class Orchestrator:
                 additional_imports, additional_packages
             )
 
-        self.executor.extend_runtime(
-            additional_imports=runtime_imports,
-            additional_packages=runtime_packages
-        )
+        try:
+            self.executor.extend_runtime(
+                additional_imports=runtime_imports,
+                additional_packages=runtime_packages
+            )
+        except Exception as e:
+            details = self._exception_details(e)
+            yield "FATAL_ERROR", self._fatal_error_message("运行时依赖准备", details)
+            return
 
         for attempt in range(self.max_llm_retries):
             yield "CODE_TOOL.START", None
-            for t, chunk in self.toolmaker_agent.execute_stream(toolmaker_prompt, previous_errors=error_log):
-                if t == "FINISH":
-                    code_str = chunk['code']
-                    schema = chunk['schema']
-                    yield "CODE_TOOL.END", None
-                elif t == "STREAM.CONTENT":
-                    yield "CODE_TOOL.STREAM", chunk
-                elif t == "STREAM.REASONING":
-                    yield "CODE_TOOL.REASONING", chunk
+            try:
+                for t, chunk in self.toolmaker_agent.execute_stream(toolmaker_prompt, previous_errors=error_log):
+                    if t == "FINISH":
+                        code_str = chunk['code']
+                        schema = chunk['schema']
+                        yield "CODE_TOOL.END", None
+                    elif t == "STREAM.CONTENT":
+                        yield "CODE_TOOL.STREAM", chunk
+                    elif t == "STREAM.REASONING":
+                        yield "CODE_TOOL.REASONING", chunk
+            except Exception as e:
+                details = self._exception_details(e)
+                if not self._is_auto_fixable_error(details):
+                    yield "FATAL_ERROR", self._fatal_error_message("工具代码生成", details)
+                    return
+                error_log = details
+                yield "ERROR_RETRY", self._retry_error_message("工具代码生成", error_log)
+                continue
 
             try:
                 yield "CODE_TOOL.TEST", None
@@ -173,16 +235,21 @@ class Orchestrator:
                         "code": code_str,
                         "schema": schema
                     }
-                    break
+                    return
 
                 toolmaker_prompt = code_str
-                error_log = str(e)
+                error_log = self._compact_error(str(e), 4000)
 
-                yield "ERROR_RETRY", error_log
-            except:
-                raise
+                yield "ERROR_RETRY", self._retry_error_message("工具代码测试", error_log)
+            except Exception as e:
+                details = self._exception_details(e)
+                if not self._is_auto_fixable_error(details):
+                    yield "FATAL_ERROR", self._fatal_error_message("工具代码测试", details)
+                    return
+                error_log = details
+                yield "ERROR_RETRY", self._retry_error_message("工具代码测试", error_log)
 
-        yield "ERROR", error_log
+        yield "FATAL_ERROR", self._fatal_error_message("工具代码生成", error_log or "已达到最大自动修复次数")
        
     def prepare_stream(self,
         image: np.ndarray, 
@@ -193,14 +260,14 @@ class Orchestrator:
     ) -> Generator[tuple[
             Literal[
                 'CODE_EVALUATE.START', 'CODE_EVALUATE.END', 'CODE_EVALUATE.STREAM', 
-                'CODE_EVALUATE.REASONING', 'FINISH'
+                'CODE_EVALUATE.REASONING', 'CODE_EVALUATE.ERROR_RETRY', 'FINISH', 'FATAL_ERROR'
             ], 
             str | None
         ], None, None]:
         error_log = None
         code_str = ""
 
-        img_to_eval = None
+        img_to_eval = image
         if max_side > 0:
             h, w = image.shape[:2]
             if (curr_max_side := max(h, w)) > max_side:
@@ -208,30 +275,43 @@ class Orchestrator:
                 img_to_eval = cv2.resize(
                     image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA
                 )
-        else:
-            img_to_eval = image
 
         for attempt in range(self.max_llm_retries):
             yield "CODE_EVALUATE.START", None
-            for t, chunk in self.evaluator_agent.execute_stream(user_prompt):
-                if t == "FINISH":
-                    code_str = chunk
-                    yield "CODE_EVALUATE.END", None
-                elif t == "STREAM.CONTENT":
-                    yield "CODE_EVALUATE.STREAM", chunk
-                elif t == "STREAM.REASONING":
-                    yield "CODE_EVALUATE.REASONING", chunk
+            try:
+                for t, chunk in self.evaluator_agent.execute_stream(user_prompt, previous_errors=error_log):
+                    if t == "FINISH":
+                        code_str = chunk
+                        yield "CODE_EVALUATE.END", None
+                    elif t == "STREAM.CONTENT":
+                        yield "CODE_EVALUATE.STREAM", chunk
+                    elif t == "STREAM.REASONING":
+                        yield "CODE_EVALUATE.REASONING", chunk
+            except Exception as e:
+                details = self._exception_details(e)
+                if not self._is_auto_fixable_error(details):
+                    yield "FATAL_ERROR", self._fatal_error_message("评价代码生成", details)
+                    return
+                error_log = details
+                yield "CODE_EVALUATE.ERROR_RETRY", self._retry_error_message("评价代码生成", error_log)
+                continue
 
             # 尝试做一次空跑验证语法
             try:
                 self.evaluator = Evaluator(img_to_eval, model_cache, device)
                 self.executor.prepare_evaluate_code(code_str, self.evaluator)
                 self.executor.execute_evaluate(code_str, image, self.evaluator)
-                break
-            except:
-                raise
+                yield "FINISH", code_str
+                return
+            except Exception as e:
+                details = self._exception_details(e)
+                if not self._is_auto_fixable_error(details):
+                    yield "FATAL_ERROR", self._fatal_error_message("评价代码验证", details)
+                    return
+                error_log = details
+                yield "CODE_EVALUATE.ERROR_RETRY", self._retry_error_message("评价代码验证", error_log)
        
-        yield "FINISH", code_str
+        yield "FATAL_ERROR", self._fatal_error_message("评价代码生成", error_log or "已达到最大自动修复次数")
 
     def process_stream(self, 
         image: np.ndarray, 
@@ -246,8 +326,8 @@ class Orchestrator:
         tuple[
             Literal[
                 "INIT.FINISH", 
-                "CODE.START", "CODE.REASONING", "CODE.END", "CODE.ERROR", 
-                'OPTUNA.START', 'OPTUNA.END'
+                "CODE.START", "CODE.STREAM", "CODE.REASONING", "CODE.END", "CODE.ERROR", 
+                'OPTUNA.START', 'OPTUNA.END', 'FATAL_ERROR'
             ], 
             str | None
         ] | tuple[
@@ -291,10 +371,8 @@ class Orchestrator:
         code_str = ""
 
         user_prompt = f"{user_prompt}\n\n" if user_prompt else "" 
-        
-        self.optimizer = BayesianOptimizer(executor=self.executor)
 
-        img_to_opti = None
+        img_to_opti = image
         if max_side > 0:
             h, w = image.shape[:2]
             if (curr_max_side := max(h, w)) > max_side:
@@ -302,8 +380,6 @@ class Orchestrator:
                 img_to_opti = cv2.resize(
                     image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA
                 )
-        else:
-            img_to_opti = image
 
         logger.info(f"调优图像大小: {img_to_opti.shape[1]}x{img_to_opti.shape[0]}, 通道数: {img_to_opti.shape[2]}")
 
@@ -312,16 +388,26 @@ class Orchestrator:
         yield "INIT.FINISH", None
 
         for attempt in range(self.max_llm_retries):
+            code_str = ""
             yield "CODE.START", None
-            for t, chunk in self.coder.execute_stream(user_prompt, "", error_log):
-                if t == "FINISH":
-                    code_str = chunk
-                    if isinstance(code_str, str):
-                        yield "CODE.END", chunk
-                elif t == "STREAM.CONTENT":
-                    yield "CODE.STREAM", chunk
-                elif t == "STREAM.REASONING":
-                    yield "CODE.REASONING", chunk
+            try:
+                for t, chunk in self.coder.execute_stream(user_prompt, "", error_log):
+                    if t == "FINISH":
+                        code_str = chunk
+                        if isinstance(code_str, str):
+                            yield "CODE.END", chunk
+                    elif t == "STREAM.CONTENT":
+                        yield "CODE.STREAM", chunk
+                    elif t == "STREAM.REASONING":
+                        yield "CODE.REASONING", chunk
+            except Exception as e:
+                details = self._exception_details(e)
+                if not self._is_auto_fixable_error(details):
+                    yield "FATAL_ERROR", self._fatal_error_message("处理代码生成", details)
+                    return
+                error_log = details
+                yield "CODE.ERROR", self._retry_error_message("处理代码生成", error_log)
+                continue
 
             if isinstance(code_str, dict):
                 yield "TOOL_REQUEST", code_str
@@ -329,20 +415,39 @@ class Orchestrator:
 
             # 尝试做一次空跑验证语法
             is_syntax_valid, error_log = self.verify_syntax(code_str)
-            if is_syntax_valid:
-                break
-        
-        if not is_syntax_valid:
-            yield "CODE.ERROR", None
+            if not is_syntax_valid:
+                yield "CODE.ERROR", self._retry_error_message("处理代码验证", error_log)
+                continue
+
+            self.optimizer = BayesianOptimizer(executor=self.executor)
+            yield 'OPTUNA.START', None
+            try:
+                optimization_result = self.optimizer.run_inner_loop_stream(
+                    code_str, evaluate_code_str, img_to_opti, image,
+                    best_queue, n_trials, callbacks=callbacks, 
+                )
+            except Exception as e:
+                yield 'OPTUNA.END', None
+                details = self._exception_details(e)
+                if not self._is_auto_fixable_error(details):
+                    yield "FATAL_ERROR", self._fatal_error_message("图像处理执行", details)
+                    return
+                error_log = details
+                yield "CODE.ERROR", self._retry_error_message("图像处理执行", error_log)
+                continue
+            yield 'OPTUNA.END', None
+
+            if optimization_result.get("error") or optimization_result.get("best_img") is None:
+                error_log = optimization_result.get("error") or "未得到可用增强结果。"
+                if not self._is_auto_fixable_error(error_log):
+                    yield "FATAL_ERROR", self._fatal_error_message("图像处理执行", error_log)
+                    return
+                yield "CODE.ERROR", self._retry_error_message("图像处理执行", error_log)
+                continue
+            
+            # ===== [新增] 提取实际使用的trial数并返回 =====
+            n_trials_used = optimization_result.get('n_trials_used', n_trials)
+            yield 'FINISH', (optimization_result['best_img'], optimization_result['best_params'], '', n_trials_used)
             return
 
-        yield 'OPTUNA.START', None
-        optimization_result = self.optimizer.run_inner_loop_stream(
-            code_str, evaluate_code_str, img_to_opti, image,
-            best_queue, n_trials, callbacks=callbacks, 
-        )
-        yield 'OPTUNA.END', None
-        
-        # ===== [新增] 提取实际使用的trial数并返回 =====
-        n_trials_used = optimization_result.get('n_trials_used', n_trials)
-        yield 'FINISH', (optimization_result['best_img'], optimization_result['best_params'], '', n_trials_used)
+        yield "FATAL_ERROR", self._fatal_error_message("处理代码生成", error_log or "已达到最大自动修复次数")

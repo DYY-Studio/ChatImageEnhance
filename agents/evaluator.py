@@ -150,13 +150,23 @@ def evaluate(img: np.ndarray) -> float:
         # 正则匹配```python ... ```代码块
         return self._extract_code(llm_response, "evaluate")
     
+    def _build_user_prompt(self, user_intent: str = '', previous_errors: str | None = None) -> str:
+        if not previous_errors:
+            return user_intent
+        return (
+            f"{user_intent}\n\n"
+            f"上一轮 evaluate 代码执行错误信息：\n{previous_errors}\n"
+            "请优先修复该错误，仍然只输出符合规范的 evaluate 函数代码。"
+        )
+
     def generate_code_stream(self, 
-        user_intent: str = '', 
+        user_intent: str = '',
+        previous_errors: str | None = None,
     ) -> Generator[tuple[str, str], None, None]:
         # 调用LLM生成代码（继承BaseAgent的带重试机制的LLM调用）
         logger.info("开始调用LLM生成图像增强代码")
         llm_response = ''
-        for t, chunk in self._call_llm_stream(user_intent):
+        for t, chunk in self._call_llm_stream(self._build_user_prompt(user_intent, previous_errors)):
             yield f'STREAM.{t}', chunk
             if t == "CONTENT":
                 llm_response += chunk
@@ -168,11 +178,12 @@ def evaluate(img: np.ndarray) -> float:
 
     def generate_code(self, 
         user_intent: str = '', 
+        previous_errors: str | None = None,
     ) -> str:
         
         # 调用LLM生成代码（继承BaseAgent的带重试机制的LLM调用）
         logger.info("开始调用LLM生成图像增强代码")
-        llm_response = self._call_llm(user_intent)
+        llm_response = self._call_llm(self._build_user_prompt(user_intent, previous_errors))
         
         # 提取并清洗代码块
         code = self._extract_code_block(llm_response)
@@ -193,7 +204,8 @@ def evaluate(img: np.ndarray) -> float:
     
     def execute_stream(
         self, 
-        user_intent: str, 
+        user_intent: str,
+        previous_errors: str | None = None,
     ) -> Generator[tuple[str, str], None, None]:
         """
         :return STREAM.REASONING: 流式返回思考内容
@@ -201,7 +213,7 @@ def evaluate(img: np.ndarray) -> float:
         :return FINISH: 返回清理后的代码
         """
         try:
-            for t, chunk in self.generate_code_stream(user_intent):
+            for t, chunk in self.generate_code_stream(user_intent, previous_errors):
                 yield t, chunk
         except Exception as e:
             logger.error(f"CoderAgent执行失败：{str(e)}", exc_info=True)

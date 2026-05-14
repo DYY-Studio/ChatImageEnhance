@@ -92,7 +92,7 @@ def render_toolmaker(orch: Orchestrator):
                 toolmaker_handler.content_end()
             elif t == "ERROR_RETRY":
                 with toolmaker_placeholder:
-                    st.error("测试失败，要求重新编写")
+                    st.error(body or "测试失败，要求重新编写")
                 with main_container:
                     with tool_status:
                         with (toolmaker_status := st.status("⌨️ 编写工具", state="error")):
@@ -100,6 +100,11 @@ def render_toolmaker(orch: Orchestrator):
                             toolmaker_placeholder = st.empty()
                 
                 toolmaker_handler = StStreamResHandler(toolmaker_status, toolmaker_container)
+            elif t == "FATAL_ERROR":
+                with toolmaker_placeholder:
+                    st.error(body or "工具生成失败，已停止。")
+                tool_status.update(state="error")
+                break
             elif t == "FINISH":
                 body["additional_imports"] = runtime_imports or []
                 body["additional_packages"] = runtime_packages or []

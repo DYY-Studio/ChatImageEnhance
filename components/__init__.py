@@ -349,11 +349,37 @@ def extract_funcs(matches: list[str], used_functions: dict):
 
 def render_message_content(msg, index: int):
     """提取内部渲染逻辑，供历史记录与最新消息复用"""
+    if msg.get("error"):
+        st.error(msg.get("content", "本轮运行失败"))
+        details = str(msg.get("error_details") or msg.get("error") or "").strip()
+        if details:
+            with st.expander("错误详情"):
+                st.code(details, language="text")
+        if st.button("🚮 删除本轮对话", on_click=delete_message, args=[index], key=f"del_btn_{id(msg)}_{index}"):
+            st.rerun()
+        return
+
     st.markdown(msg["content"])
     if "image" not in msg:
         if st.button("🚮 删除本轮对话", on_click=delete_message, args=[index], key=f"del_btn_{id(msg)}_{index}"):
             st.rerun()
     else:
+        meta_items = []
+        if msg.get("image") is not None:
+            try:
+                h, w = msg["image"].shape[:2]
+                meta_items.append(f"图像 {w}x{h}")
+            except Exception:
+                pass
+        if "n_trials_used" in msg:
+            meta_items.append(f"实际调优 {msg.get('n_trials_used')} 轮")
+        if msg.get("new_tool"):
+            tool_schema = msg["new_tool"].get("schema", {}) if isinstance(msg["new_tool"], dict) else {}
+            tool_name = tool_schema.get("name") or "未命名工具"
+            meta_items.append(f"新增工具 {tool_name}")
+        if meta_items:
+            st.caption(" · ".join(meta_items))
+
         if any(key in msg for key in ['eval_code', 'process_code', 'best_params']):
             with st.expander("🛠️ 查看此轮生成的代码与最优参数"):
                 with st.expander("评价逻辑 (Evaluation Code)"):
@@ -364,6 +390,19 @@ def render_message_content(msg, index: int):
                 
                 with st.expander("Optuna 最优参数组合"):
                     st.json(msg.get("best_params", {}))
+                if msg.get("new_tool"):
+                    new_tool = msg["new_tool"]
+                    with st.expander("新增工具详情"):
+                        st.write("Schema")
+                        st.json(new_tool.get("schema", {}))
+                        st.write("代码")
+                        st.code(new_tool.get("code", "# 无工具代码"), language="python")
+                        if new_tool.get("additional_imports"):
+                            st.write("附加导入")
+                            st.json(new_tool.get("additional_imports"))
+                        if new_tool.get("additional_packages"):
+                            st.write("附加依赖")
+                            st.json(new_tool.get("additional_packages"))
         else:
             st.info(":information_source: 本轮处理没有任何可显示的信息")
 
