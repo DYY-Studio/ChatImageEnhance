@@ -199,6 +199,7 @@ def safe_seplut_retouch(
 from modelscope.pipelines import pipeline
 from modelscope.utils.constant import Tasks
 from modelscope.outputs import OutputKeys
+from core.searcher import Searcher
 def _modelscope_img_pipeline(
     img: np.ndarray,
     model_name: str,
@@ -206,7 +207,8 @@ def _modelscope_img_pipeline(
     pipeline_task: str,
     caller_name: str,
     cache: dict | None = None,
-    device: str = 'cpu'
+    device: str = 'cpu',
+    cvt_input_color: bool = True
 ):
     try:
         image_pipeline = None
@@ -214,17 +216,19 @@ def _modelscope_img_pipeline(
             image_pipeline = pipeline(
                 pipeline_task, 
                 model_name,
-                device=device
+                device=device,
+                ignore_file_pattern=Searcher._MODEL_IGNORE_PATTERNS
             )
         except:
             image_pipeline = pipeline(
                 pipeline_task, 
                 model_name,
-                device='cpu'
+                device='cpu',
+                ignore_file_pattern=Searcher._MODEL_IGNORE_PATTERNS
             )
         if cache is not None and cache_key not in cache:
             cache[cache_key] = image_pipeline
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) if cvt_input_color else img.copy()
         result_rgb = image_pipeline(img_rgb)[OutputKeys.OUTPUT_IMG]
         result = cv2.cvtColor(result_rgb, cv2.COLOR_RGB2BGR)
         return result
@@ -287,5 +291,5 @@ def safe_uhdm_demoireing(
     return _modelscope_img_pipeline(
         img=img, model_name=model_name, cache_key=cache_key,
         pipeline_task=pipeline_task, caller_name='UHDM demoireing',
-        cache=cache, device=device
+        cache=cache, device=device, cvt_input_color=False
     )

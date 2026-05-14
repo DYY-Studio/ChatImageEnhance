@@ -5,7 +5,7 @@ import torchvision
 
 '''
 # --------------------------------------------
-# Zero-DCE++
+# SepLUT
 # --------------------------------------------
 Reference:
 @InProceedings{yang2022seplut,

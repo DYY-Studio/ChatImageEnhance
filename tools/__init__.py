@@ -734,7 +734,7 @@ global_registry.register(
     func=safe_seplut_retouch,
     description=(
         "基于深度学习的超轻量级调光调色模型。"
-        "通过生成1D和3D LUT实现曝光和色彩微调，实现HDR视觉效果。"
+        "通过预测1D和3D LUT实现曝光和色彩微调，实现HDR视觉效果。"
     ),
     params_schema={
         "cache": {
@@ -748,6 +748,66 @@ global_registry.register(
     },
     requires_learning=True,
     performance="slow"
+)
+
+global_registry.register(
+    name="NAFNet_Denoise",
+    func=safe_nafnet_denoise,
+    description=(
+        "基于深度学习的轻量级降噪模型。"
+    ),
+    params_schema={
+        "cache": {
+            "type": "dict",
+            "description": "单例模式使用的缓存字典"
+        },
+        "device": {
+            "type": "str",
+            "description": "推理设备"
+        }
+    },
+    requires_learning=True,
+    performance="very slow"
+)
+
+global_registry.register(
+    name="NAFNet_Deblur",
+    func=safe_nafnet_demotionblur,
+    description=(
+        "基于深度学习的轻量级去运动模糊模型。"
+    ),
+    params_schema={
+        "cache": {
+            "type": "dict",
+            "description": "单例模式使用的缓存字典"
+        },
+        "device": {
+            "type": "str",
+            "description": "推理设备"
+        }
+    },
+    requires_learning=True,
+    performance="very slow"
+)
+
+global_registry.register(
+    name="UHDM_Demoireing",
+    func=safe_uhdm_demoireing,
+    description=(
+        "基于深度学习的轻量级去显示器摩尔纹模型。"
+    ),
+    params_schema={
+        "cache": {
+            "type": "dict",
+            "description": "单例模式使用的缓存字典"
+        },
+        "device": {
+            "type": "str",
+            "description": "推理设备"
+        }
+    },
+    requires_learning=True,
+    performance="very slow"
 )
 
 global_registry.load_custom_tools()
