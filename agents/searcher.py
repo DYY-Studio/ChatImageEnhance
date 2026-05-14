@@ -141,7 +141,7 @@ class SearcherAgent(BaseAgent):
         }, allow_unicode=True, indent=2)
 
     def _list_directory_github(self, repo_name: str, path: str = "") -> str:
-        if repo_name != self.curr_repo.full_name:
+        if self.curr_repo is None or repo_name != self.curr_repo.full_name:
             self.curr_repo = self.github_client.get_repo(repo_name)
         files: list[ContentFile] = self.curr_repo.get_contents(path)
         if not isinstance(files, list):
@@ -158,7 +158,7 @@ class SearcherAgent(BaseAgent):
     def _read_file_github(self, repo_name: str, file_path: str, start_line: int = 0, end_line: int = -1) -> str:
         start_line = int(start_line)
         end_line = int(end_line)
-        if repo_name != self.curr_repo.full_name:
+        if self.curr_repo is None or repo_name != self.curr_repo.full_name:
             self.curr_repo = self.github_client.get_repo(repo_name)
         try:
             file_content =  self.curr_repo.get_contents(file_path).decoded_content.decode()
@@ -390,7 +390,9 @@ submit_findings(
 
 # Workflow (Drill-Down 策略)
 你必须遵循以下探索路径：
-1. **定向 (Targeting):** 分析用户需求，结合来源策略，决定目标平台。如果是传统图像处理，优先 GitHub；如果是传统方法难以完成的任务（如风格迁移），优先考虑 Hugging Face 或 ModelScope。
+1. **定向 (Targeting):** 分析用户需求，结合来源策略，决定目标平台。
+  - 如果是传统图像处理，优先 GitHub。
+  - 如果是传统方法难以完成的任务（如风格迁移），只能使用 Hugging Face 或 ModelScope。
 2. **探索 (Search):** 使用对应的搜索工具（`search_web`, `search_repos_github`, `search_models_hf`, 或 `search_models_modelscope`）寻找高相关目标。优先搜索你已知的适合该领域的模型，如果找不到则提取最核心的关键字进行搜索。
 3. **侦察 (Recon):** 使用 `get_repo_overview` 或 `get_readme` 查看仓库/模型是否有价值。对于模型，重点查看 README 中的 "Usage" 或 "Inference" 示例代码。如果描述不符，立即换一个。
 4. **下钻 (Drill):** 观察文件树（`list_directory`）。在 GitHub 中通常寻找 `src`, `core`, 或 `.py` 源码；在 HF/ModelScope 中通常寻找包含推理逻辑的 `app.py`, `inference.py`, `pipeline.py`。

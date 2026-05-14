@@ -63,7 +63,7 @@ class ToolMakerAgent(BaseAgent):
 - 你**只能**使用当前上下文中存在的以下库：
     - `numpy` (作为 `np`), `cv2` (opencv-contrib-python), `skimage` (scikit-image), `math`, `PIL` (pillow)。
     - $LEARNING_LIBS$
-- **绝对禁止**在输出的代码中使用 `import`, `__import__` 语句。你不能导入任何其他标准库（如 `os`, `sys`, `subprocess` 等）或第三方库。
+- 你不能导入任何其他标准库（如 `os`, `sys`, `subprocess` 等）或第三方库。
 - **绝对禁止**使用 `exec`, `eval`, `open`, 以及任何带有文件系统或网络访问性质的代码。
 - $LEARNING_POLICY$
 - 如果检索结果中提供了“本地下载目录/已下载文件”，深度学习模型必须优先从本地目录加载，禁止在推理时隐式联网下载。
