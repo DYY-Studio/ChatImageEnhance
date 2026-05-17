@@ -166,6 +166,30 @@ class Orchestrator:
             return False, traceback.format_exc()
         return True, None
 
+    @staticmethod
+    def _validate_tool_request(request: dict) -> tuple[bool, str | None]:
+        if not isinstance(request, dict):
+            return False, "工具请求必须是 JSON 对象"
+        if request.get("status") != "NEED_NEW_TOOL":
+            return False, "工具请求 status 必须为 NEED_NEW_TOOL"
+        description = str(request.get("description") or "").strip()
+        if not description:
+            return False, "工具请求缺少 description"
+        tool_name = str(request.get("tool_name") or "").strip()
+        if tool_name and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", tool_name):
+            return False, "工具请求 tool_name 必须是合法 Python 标识符"
+        return True, None
+
+    @staticmethod
+    def _sanitize_toolmaker_runtime_context(runtime_context: str | None) -> str:
+        if not runtime_context:
+            return ""
+        return "\n".join(
+            line
+            for line in str(runtime_context).splitlines()
+            if not line.strip().startswith(("处理算子偏好:", "处理算子偏好："))
+        ).strip()
+
     def toolmaker_stream(
         self,
         tool_request: str,
@@ -182,7 +206,9 @@ class Orchestrator:
     ], None, None]:
         toolmaker_prompt = f"用户需求: \n{tool_request}"
         if runtime_context:
-            toolmaker_prompt += f"\n\n运行时环境约束:\n{runtime_context.strip()}"
+            toolmaker_runtime_context = self._sanitize_toolmaker_runtime_context(runtime_context)
+            if toolmaker_runtime_context:
+                toolmaker_prompt += f"\n\n运行时环境约束:\n{toolmaker_runtime_context}"
         if isinstance(search_result, dict) and 'code_snippets' in search_result and 'summary' in search_result:
             extra_lines = []
             if search_result.get("source"):
@@ -235,6 +261,16 @@ class Orchestrator:
                 additional_imports, additional_packages
             )
 
+        if hasattr(self.toolmaker_agent, "set_additional_imports"):
+            self.toolmaker_agent.set_additional_imports(runtime_imports)
+
+        if isinstance(search_result, dict) and search_result.get("download_error"):
+            yield "FATAL_ERROR", self._fatal_error_message(
+                "模型资产准备",
+                str(search_result.get("download_error") or "模型资产下载失败")
+            )
+            return
+
         try:
             self.executor.extend_runtime(
                 additional_imports=runtime_imports,
@@ -250,8 +286,14 @@ class Orchestrator:
             try:
                 for t, chunk in self.toolmaker_agent.execute_stream(toolmaker_prompt, previous_errors=error_log):
                     if t == "FINISH":
+                        if not isinstance(chunk, dict):
+                            raise ValueError("ToolMakerAgent 未返回 JSON 对象")
+                        if not isinstance(chunk.get("schema"), dict) or not str(chunk.get("code") or "").strip():
+                            raise ValueError("ToolMakerAgent 返回缺少 code 或 schema")
                         code_str = chunk['code']
                         schema = self._schema_with_model_assets(chunk['schema'], search_result)
+                        if not isinstance(schema.get("parameters"), dict):
+                            raise ValueError("ToolMakerAgent schema.parameters 必须是对象")
                         yield "CODE_TOOL.END", None
                     elif t == "STREAM.CONTENT":
                         yield "CODE_TOOL.STREAM", chunk
@@ -339,7 +381,7 @@ class Orchestrator:
             try:
                 self.evaluator = Evaluator(img_to_eval, model_cache, device)
                 self.executor.prepare_evaluate_code(code_str, self.evaluator)
-                self.executor.execute_evaluate(code_str, image, self.evaluator)
+                self.executor.execute_evaluate(code_str, img_to_eval, self.evaluator)
                 yield "FINISH", code_str
                 return
             except Exception as e:
@@ -449,6 +491,11 @@ class Orchestrator:
                 continue
 
             if isinstance(code_str, dict):
+                valid_request, request_error = self._validate_tool_request(code_str)
+                if not valid_request:
+                    error_log = request_error or "工具请求格式不合法"
+                    yield "CODE.ERROR", self._retry_error_message("工具请求验证", error_log)
+                    continue
                 yield "TOOL_REQUEST", code_str
                 return
 
