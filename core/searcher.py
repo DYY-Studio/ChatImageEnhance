@@ -420,12 +420,15 @@ class Searcher:
             download_url = str(getattr(content, "download_url", "") or "").strip()
             if not download_url:
                 raise
-            req = httpx.Request(
+            response = httpx.get(
                 download_url,
                 headers={"User-Agent": "ChatImageEnhance/1.0"},
+                follow_redirects=True,
+                timeout=120.0,
                 verify=os.environ.get('REQUESTS_CA_BUNDLE', True)
             )
-            file_bytes = req.read()
+            response.raise_for_status()
+            file_bytes = response.content
 
         # Git LFS 大文件在 Contents API 下通常只返回 pointer 文本，需显式报错避免误用
         if file_bytes.startswith(b"version https://git-lfs.github.com/spec/v1"):
@@ -620,14 +623,45 @@ class Searcher:
         while content is None or 'tool' not in content or content['tool'] != 'submit_findings':
             times += 1
             start_time = time.perf_counter()
-            for t, chunk in self.searcher.execute_stream(thinks, tool_result):
-                if t == "STREAM.REASONING":
-                    yield f"SEARCH.REASONING.{times}", chunk
-                elif t == "STREAM.CONTENT":
-                    yield f"SEARCH.CONTENT.{times}", chunk
-                elif t == "FINISH":
-                    content = chunk
-                    yield f"SEARCH.STEP.FINISH", content.get('think')
+            try:
+                for t, chunk in self.searcher.execute_stream(thinks, tool_result):
+                    if t == "STREAM.REASONING":
+                        yield f"SEARCH.REASONING.{times}", chunk
+                    elif t == "STREAM.CONTENT":
+                        yield f"SEARCH.CONTENT.{times}", chunk
+                    elif t == "FINISH":
+                        content = chunk
+                        if isinstance(content, dict):
+                            yield f"SEARCH.STEP.FINISH", content.get('think')
+            except Exception as e:
+                content = None
+                tool_result = f"Tool Use Error: SearcherAgent response invalid: {e}"
+                thinks += f"\n运行{times}: 搜索响应解析失败，已要求重新输出严格 JSON。错误：{e}"
+                yield f"THINK.{times}", f"搜索响应解析失败，准备重试：{e}"
+                if times >= steps_limit:
+                    yield 'SEARCH.STEPS_LIMIT_REACHED', None
+                    return
+                continue
+
+            if not isinstance(content, dict) or "think" not in content or "tool" not in content:
+                tool_result = "Tool Use Error: SearcherAgent must return JSON object with think/tool/params"
+                thinks += f"\n运行{times}: 搜索响应缺少必要字段，已要求重新输出严格 JSON。"
+                yield f"THINK.{times}", "搜索响应缺少必要字段，准备重试。"
+                if times >= steps_limit:
+                    yield 'SEARCH.STEPS_LIMIT_REACHED', None
+                    return
+                continue
+
+            if content["tool"] != "submit_findings" and not isinstance(content.get("params"), dict):
+                tool_result = "Tool Use Error: tool params must be a JSON object"
+                thinks += f"\n运行{times}: 工具调用缺少 params 对象，已要求重新输出严格 JSON。"
+                yield f"THINK.{times}", "工具调用缺少 params 对象，准备重试。"
+                if times >= steps_limit:
+                    yield 'SEARCH.STEPS_LIMIT_REACHED', None
+                    return
+                continue
+            if content["tool"] == "submit_findings" and not isinstance(content.get("params"), dict):
+                content["params"] = {}
 
             thinks += f"\n运行{times}: {content['think']}"
             yield f"THINK.{times}", content['think']
