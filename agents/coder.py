@@ -23,6 +23,14 @@ class CoderAgent(BaseAgent):
         temperature: float = 0.1, 
         reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None,
         low_res: bool = False,
+        allow_learning: bool = True,
+        operator_preference: Literal[
+            "traditional_only",
+            "prefer_traditional",
+            "prefer_learning",
+            "learning_only"
+        ] = "prefer_traditional",
+        additional_imports: list[str] | None = None,
         **kwargs
     ):
         """
@@ -33,24 +41,133 @@ class CoderAgent(BaseAgent):
         :param temperature: 生成温度，低温度保证代码逻辑稳定性（0.0-0.2为宜）
         """
         self.low_res = low_res
+        self.allow_learning = bool(allow_learning)
+        self.operator_preference = self._normalize_operator_preference(
+            operator_preference, self.allow_learning
+        )
+        self.learning_enabled_for_code = (
+            self.allow_learning and self.operator_preference != "traditional_only"
+        )
+        dynamic_imports = [
+            str(imp).strip() for imp in (additional_imports or [])
+            if str(imp).strip()
+        ]
+        if not self.learning_enabled_for_code:
+            blocked_roots = {"torch", "torchvision", "transformers", "diffusers", "modelscope", "huggingface_hub"}
+            dynamic_imports = [
+                imp for imp in dynamic_imports
+                if imp.split(".", maxsplit=1)[0].strip().lower() not in blocked_roots
+            ]
+        self.additional_imports = ', '.join(
+            f"`{imp}`" for imp in dynamic_imports
+        ) if dynamic_imports else ''
         # 调用父类初始化（LLM客户端、模型名、系统提示词、温度）
         super().__init__(llm_client, model_name, self._build_system_prompt(), temperature, reasoning_effort, **kwargs)
-        # 加载全局算子注册表（供Prompt注入可用CV算子信息）
-        self.tools = global_registry._tools
         
         logger.info("CoderAgent 初始化完成，已加载全局算子注册表")
 
     def rebuild_system_prompt(self):
         self.system_prompt = self._build_system_prompt()
 
+    @staticmethod
+    def _normalize_operator_preference(
+        value: str,
+        allow_learning: bool
+    ) -> Literal["traditional_only", "prefer_traditional", "prefer_learning", "learning_only"]:
+        mode = str(value or "").strip().lower()
+        alias = {
+            "traditional_only": "traditional_only",
+            "only_traditional": "traditional_only",
+            "traditional": "traditional_only",
+            "仅传统": "traditional_only",
+            "prefer_traditional": "prefer_traditional",
+            "traditional_preferred": "prefer_traditional",
+            "偏好传统": "prefer_traditional",
+            "prefer_learning": "prefer_learning",
+            "prefer_deep_learning": "prefer_learning",
+            "偏好深度学习": "prefer_learning",
+            "learning_only": "learning_only",
+            "only_learning": "learning_only",
+            "deep_learning_only": "learning_only",
+            "only_deep_learning": "learning_only",
+            "仅深度学习": "learning_only",
+        }
+        normalized = alias.get(mode, "prefer_traditional")
+        if not allow_learning:
+            return "traditional_only"
+        return normalized
+
+    def _schema_filter_mode(self) -> Literal["all", "traditional_only", "learning_only"]:
+        if self.operator_preference == "traditional_only":
+            return "traditional_only"
+        if self.operator_preference == "learning_only":
+            return "learning_only"
+        return "all"
+
     def _build_system_prompt(self) -> str:
         """
         构建专属系统提示词，明确代码生成的硬性规则和格式要求
         核心原则：让LLM生成可直接被Optuna调用、容错性强的process函数
         """
+
+        schema_filter_mode = self._schema_filter_mode()
+        schema_list = global_registry.get_schemas_for_llm(
+            allow_learning=self.allow_learning,
+            learning_mode=schema_filter_mode
+        )
+        schema_dump = global_registry.get_all_schemas_for_llm(
+            allow_learning=self.allow_learning,
+            learning_mode=schema_filter_mode
+        )
+
+        preference_guidance_map = {
+            "traditional_only": "仅传统：你只能使用传统算子，禁止使用深度学习算子。",
+            "prefer_traditional": "偏好传统：优先尝试传统算子；当传统方案明显不足时，再使用深度学习算子。",
+            "prefer_learning": "偏好深度学习：优先尝试深度学习算子；若传统算子更稳定或更低成本，也可混合/回退。",
+            "learning_only": "仅深度学习：你只能使用深度学习算子，禁止使用传统算子。"
+        }
+        preference_guidance = preference_guidance_map.get(
+            self.operator_preference, preference_guidance_map["prefer_traditional"]
+        )
+
+        if self.learning_enabled_for_code:
+            learning_libraries_text = (
+                "`torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`, "
+                f"{self.additional_imports if self.additional_imports else '（无额外模块）'}"
+            )
+            learning_switch_status = "启用"
+            learning_switch_policy = (
+                "允许使用深度学习算子，但必须遵守本地模型优先与显存回落规则。"
+                if self.operator_preference != "learning_only"
+                else "当前为仅深度学习模式，禁止使用传统算子。必须基于深度学习算子完成流程，并遵守本地模型优先与显存回落规则。"
+            )
+        else:
+            learning_libraries_text = (
+                "当前会话已禁用深度学习处理，严禁使用 `torch` / `torchvision` / "
+                "`transformers` / `diffusers` / `modelscope` 及任何需要下载/加载深度模型的模块。"
+            )
+            learning_switch_status = "禁用"
+            learning_switch_policy = (
+                "禁止生成任何需要深度学习推理/模型权重加载的处理流程。若需求必须依赖深度学习，请输出 NEED_NEW_TOOL 并在 description 明确“当前深度学习已禁用，无法执行”。"
+            )
+
+        schema_filter_notice_map = {
+            "traditional_only": "Schema 已按“仅传统”过滤，仅包含传统算子。",
+            "learning_only": "Schema 已按“仅深度学习”过滤，仅包含深度学习算子。",
+            "all": "Schema 未过滤，包含传统+深度学习算子。"
+        }
+        schema_filter_notice = schema_filter_notice_map.get(schema_filter_mode, schema_filter_notice_map["all"])
+        schema_empty_guard = ""
+        if schema_filter_mode in ("traditional_only", "learning_only") and not schema_list:
+            desired = "传统算子" if schema_filter_mode == "traditional_only" else "深度学习算子"
+            schema_empty_guard = (
+                f"当前偏好过滤后没有任何可用{desired}。你必须直接输出 `NEED_NEW_TOOL` JSON，"
+                "并在 description 里明确“当前偏好过滤后可用算子为空”。"
+            )
+        elif schema_filter_mode in ("traditional_only", "learning_only"):
+            schema_empty_guard = "仅档位过滤后仍有可用算子，必须严格在该集合内选型。"
+
         # 从全局注册表中提取所有CV算子的Schema（供LLM参考可用函数）
-        tool_schemas = global_registry.get_all_schemas_for_llm()
-      
         prompt = f"""
 ### Role / 角色
 你是一个专家级的计算机视觉工程师和 Python 开发者。
@@ -66,15 +183,34 @@ class CoderAgent(BaseAgent):
    - **情况 B (工具缺失)**：如果用户的需求是某种特殊的风格化、特定的底层算法，且现有算子无论如何组合都无法达到目的，请放弃编写代码，转而输出一个 JSON 格式的“新工具请求”。
 
 ### Code Constraints / 代码约束
-* **函数签名**：必须严格为 `def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:`。
-* **参数采样**：必须使用 `trial` 对象获取参数。如果一个参数完全没有调优的价值，必须使用常数来阻止Optuna调优。
-    * 例如：`d = trial.suggest_int("Bilateral_Filter_d", 1, 9)`
-    * 例如：`sigma_color = trial.suggest_float("Bilateral_Filter_sigma_color", 10.0, 150.0)`
-    * 例如：`ksize_median = trial.suggest_categorical("Median_Denoise_ksize", [3, 5, 7])`
-* **库访问**：你只能使用 `np` (numpy), `cv2` (opencv-contrib-python), `optuna`, `skimage` (scikit-image) 以及提供的算子库 `cv_wrappers`。
-* **算子调用**：所有算子必须通过 `cv_wrappers.算子名(img, **params)` 的形式调用。
-* **纯净性**：函数内不要包含 `import` 语句，不要定义全局变量。
-* **辅助函数**：允许编写辅助函数简化过程、提高可读性，辅助函数必须嵌套在process函数中。
+* **函数签名**：必须严格为 `def process(img: np.ndarray, trial: optuna.Trial, cache: dict) -> np.ndarray:`。
+* **参数决策**：仔细研判用户需求，决定是否要对算子的特定参数进行调优。
+    - 情况 A (需要调优)：必须使用 `trial` 对象获取参数
+        - 例如：`d = trial.suggest_int("Bilateral_Filter_d", 1, 9)`
+        - 例如：`sigma_color = trial.suggest_float("Bilateral_Filter_sigma_color", 10.0, 40.0)`
+        - 例如：`ksize_median = trial.suggest_categorical("Median_Denoise_ksize", [3, 5, 7])`
+    - 情况 B (不需要)：必须使用 **常数** 设置参数
+        - 例如：`adjust_sigmoid_cutoff = 0.5`
+    - 情况 C (多工具可选 & 无可调参数)：如果工具库有多个可以实现目标的算子，并且算子 **均没有** 可调优参数，应当使用 `trial` 暴露一个可用算子列表给 Optuna
+        - 例如：`low_light_choice = trial.suggest_categorical("Low_Light_Tool_Choice", ["Zero_DCE_Ext_Enhance", "SCI_Low_Light_Enhance"])`
+    - **禁止调优的参数类型**：`cache`、`device`、`model_dir`、字符串路径、模型ID等运行时/环境参数，必须使用常量或直接透传，不得 `trial.suggest_*`
+    - 如果算子暴露了 `model_dir` 参数，它是运行时固定参数，会由系统根据算子 schema 中的 `source` / `repo_id` 元数据自动注入；除非用户明确提供自定义本地路径，否则不要在调用算子时手写 `model_dir`。
+* **库访问**：你只能使用下列库：
+    - 基础处理: `np` (numpy), `cv2` (opencv-contrib-python), `optuna`, `skimage` (scikit-image), `PIL` (pillow) 以及提供的算子库 `cv_wrappers`
+    - 深度学习:
+      {learning_libraries_text}
+* **算子调用**：所有算子必须通过 `cv_wrappers.算子名(img, **params)` 的形式调用
+* **纯净性**：函数内不要导入模块，不要使用 `import`, `__import__` 语句，不要定义全局变量
+* **辅助函数**：允许编写辅助函数简化过程、提高可读性，辅助函数必须嵌套在process函数中
+* **单例模式**: 代码会被多次执行，只需要加载一次的内容必须放置在 `cache` 字典中
+* **本地模型优先**: 若调用深度学习算子且其参数包含 `model_dir`，运行时会按来源自动注入本地目录；不要在 `process` 中拼接 Hugging Face / ModelScope 缓存路径，也不要构造联网下载逻辑
+* **深度学习开关**: 当前会话{learning_switch_status}深度学习处理。{learning_switch_policy}
+* **算子偏好**: {preference_guidance}
+* **运行时信息读取**: 可从 `cache.get("__runtime__", {{}})` 读取运行时偏好：
+    - `preferred_device`: 用户选择的处理设备（如 `cuda` / `mps` / `cpu`）
+    - `performance_profile`: 用户选择的性能档位（`fast` / `balanced` / `low_memory`）
+    - `device_info`: 系统设备信息摘要
+* **显存回落兼容**: 若调用高显存占用算子（如含 `tile_size` / `patch_size` / `batch_size` 参数），必须优先把这些参数显式暴露并传给算子，避免写死在函数内部，便于运行时自动回落机制接管。
 
 ### Strategy & Best Practices / 策略建议
 * **命名规范**：在 `trial.suggest` 中使用 `"{{算子名}}_{{参数名}}"` 的命名方式，防止参数冲突。
@@ -94,14 +230,16 @@ class CoderAgent(BaseAgent):
 }
 
 ### Provided Schema / 算子库文档
-{tool_schemas}
+{schema_filter_notice}
+{schema_empty_guard}
+{schema_dump}
 
 ### Output Format / 输出格式要求
 #### 格式 A：输出处理代码 (情况 A)
 你必须直接返回代码块，不要包含冗长的解释。代码结构应如下：
 
 ```python
-def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
+def process(img: np.ndarray, trial: optuna.Trial, cache: dict) -> np.ndarray:
     # 1. 参数采样 (基于 Schema 范围)
     # 2. 图像处理流程
     # 3. 返回处理结果
@@ -114,7 +252,7 @@ def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
 **Assistant Thinking:** 现有算子库中有 Bilateral_Filter，完全可以满足。
 **Assistant Response:**
 ```python
-def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
+def process(img: np.ndarray, trial: optuna.Trial, cache: dict) -> np.ndarray:
     # 针对“保边降噪”的需求，选择双边滤波 (Bilateral_Filter)
     
     # 1. 采样参数
@@ -218,12 +356,12 @@ def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
             code = self._extract_code_block(llm_response)
             logger.info(f"成功生成代码：\n{code}")
             yield 'FINISH', code
-        except:
+        except Exception:
             try:
                 res_json = self._extract_json(llm_response)
                 logger.info(f"要求生成工具：\n{res_json}")
                 yield 'FINISH', res_json
-            except:
+            except Exception:
                 raise RuntimeError("LLM 回复既不包含合法的 JSON 工具请求，也未包含合法的 process 函数代码块")
 
     def generate_code(self, 
@@ -251,12 +389,12 @@ def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
             code = self._extract_code_block(llm_response)
             logger.info(f"成功生成代码：\n{code}")
             return code
-        except:
+        except Exception:
             try:
                 res_json = self._extract_json(llm_response)
                 logger.info(f"要求生成工具：\n{res_json}")
                 return res_json
-            except:
+            except Exception:
                 raise RuntimeError("LLM 回复既不包含合法的 JSON 工具请求，也未包含合法的 process 函数代码块")
 
     def execute(self, user_intent: str = '', init_details: str = '', previous_errors: str = None) -> str | dict:

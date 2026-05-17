@@ -218,3 +218,4 @@ __marimo__/
 # custom
 tools/custom/
 temp/
+caches/

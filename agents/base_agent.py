@@ -260,7 +260,7 @@ class BaseAgent:
             except Exception as e:
                 raise RuntimeError(f"程序错误: {str(e)}")
 
-    def _extract_json(self, text: str) -> Optional[dict[str, Any]]:
+    def _extract_json(self, text: str) -> dict[str, Any]:
         """
         （占位）极其重要的防御性方法：从大模型的回复中强行挖出 JSON。
 
@@ -268,7 +268,10 @@ class BaseAgent:
         """
         try:
             # 1. 尝试直接解析 (万一模型很乖，直接输出了纯 JSON)
-            return json.loads(text)
+            parsed = json.loads(text)
+            if not isinstance(parsed, dict):
+                raise ValueError(f"LLM JSON must be an object, got {type(parsed).__name__}")
+            return parsed
         except json.JSONDecodeError:
             # 2. 用正则提取 Markdown 代码块中的 JSON: ```json ... ``` 
             # 或直接提取花括号 {...} 或方括号 [...] 的内容
@@ -279,13 +282,16 @@ class BaseAgent:
             if match:
                 json_str = match.group(1).strip()
                 try:
-                    return json.loads(json_str)
+                    parsed = json.loads(json_str)
+                    if not isinstance(parsed, dict):
+                        raise ValueError(f"LLM JSON must be an object, got {type(parsed).__name__}")
+                    return parsed
                 except json.JSONDecodeError as e:
                     logging.error(f"提取出的 JSON 字符串仍存在语法错误: {e}\n原文:\n{json_str}")
-                    return None
+                    raise ValueError(f"LLM 回复中的 JSON 无法解析: {e}") from e
             else:
                 logging.error(f"无法在 LLM 回复中找到合法的 JSON 结构。\n回复原文:\n{text}")
-                return None
+                raise ValueError("LLM 回复中未找到合法的 JSON 对象")
             
     def _extract_code(self, text: str, target_func_name: str):
         """

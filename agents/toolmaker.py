@@ -1,17 +1,27 @@
 from agents.base_agent import BaseAgent
-from typing import Generator, Literal
+from typing import Generator, Iterable, Literal
 
 import logging
 
 logger = logging.getLogger("ToolMakerAgent")
 
 class ToolMakerAgent(BaseAgent):
+    _LEARNING_IMPORT_ROOTS = {
+        "torch",
+        "torchvision",
+        "transformers",
+        "diffusers",
+        "modelscope",
+        "huggingface_hub",
+    }
 
     def __init__(self, 
         llm_client, 
         model_name: str = "gpt-4o-mini",
         temperature: float = 0.1,
         reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None,
+        allow_learning: bool = True,
+        additional_imports: list[str] | None = None,
         **kwargs
     ):
         """
@@ -22,10 +32,48 @@ class ToolMakerAgent(BaseAgent):
         :param temperature: 生成温度，低温度保证代码逻辑稳定性（0.0-0.2为宜）
         """
         # 构造CoderAgent专属的系统提示词，明确代码生成规则
+        self.allow_learning = bool(allow_learning)
+        self.additional_imports = self._normalize_additional_imports(additional_imports)
         system_prompt = self._build_system_prompt()
         # 调用父类初始化（LLM客户端、模型名、系统提示词、温度）
         super().__init__(llm_client, model_name, system_prompt, temperature, reasoning_effort, **kwargs)
         # 加载全局算子注册表（供Prompt注入可用CV算子信息）
+
+    def _normalize_additional_imports(self, imports: Iterable[str] | None) -> list[str]:
+        normalized: list[str] = []
+        for imp in imports or []:
+            token = str(imp).strip()
+            if not token:
+                continue
+            root = token.split(".", maxsplit=1)[0].strip().lower()
+            if (not self.allow_learning) and root in self._LEARNING_IMPORT_ROOTS:
+                continue
+            if token not in normalized:
+                normalized.append(token)
+        return normalized
+
+    def set_additional_imports(self, imports: Iterable[str] | None):
+        """Refresh the system prompt after search has resolved runtime deps."""
+        self.additional_imports = self._normalize_additional_imports(imports)
+        self.system_prompt = self._build_system_prompt()
+
+    def _allowed_optional_libraries_text(self) -> str:
+        extras = [f"`{imp}`" for imp in self.additional_imports]
+        if self.allow_learning:
+            libs = [
+                "`torch`",
+                "`torchvision`",
+                "`transformers`",
+                "`diffusers`",
+                "`modelscope`",
+            ]
+            if extras:
+                libs.extend(extras)
+            return ", ".join(libs)
+
+        if extras:
+            return "深度学习处理已禁用；额外允许的非深度学习模块：" + ", ".join(extras)
+        return "当前会话已禁用深度学习处理，且无额外模块。"
 
     def _build_system_prompt(self) -> str:
         """
@@ -46,15 +94,38 @@ class ToolMakerAgent(BaseAgent):
 # CRITICAL Constraints (必须严格遵守的安全与代码约束)
 
 ## 1. 允许使用的环境与库
-- 你**只能**使用当前上下文中存在的以下库：`numpy` (作为 `np`), `cv2` (opencv-contrib-python), `skimage` (scikit-image), `scipy`, `math`。
-- **绝对禁止**在输出的代码中使用 `import` 语句。你不能导入任何其他标准库（如 `os`, `sys`, `subprocess` 等）或第三方库。
+- 你**只能**使用当前上下文中存在的以下库：
+    - `numpy` (作为 `np`), `cv2` (opencv-contrib-python), `skimage` (scikit-image), `math`, `PIL` (pillow)。
+    - $LEARNING_LIBS$
+- 你不能导入任何其他标准库（如 `os`, `sys`, `subprocess` 等）或第三方库。
 - **绝对禁止**使用 `exec`, `eval`, `open`, 以及任何带有文件系统或网络访问性质的代码。
+- $LEARNING_POLICY$
+- 系统已经设置 `HF_HOME` 和 `MODELSCOPE_CACHE`，repo-id 驱动的加载方式应优先依赖这些缓存根目录。
+- **Hugging Face / ModelScope 离线加载硬性规则**：只要调用 Hugging Face 或 ModelScope 的模型加载/推理入口，必须显式传入 `local_files_only=True`，包括但不限于 `from_pretrained(...)`、`pipeline(...)` / `Pipeline(...)`、`snapshot_download(...)`、`hf_hub_download(...)`。正确示例：`AutoModel.from_pretrained(repo_id, local_files_only=True)`、`DiffusionPipeline.from_pretrained(repo_id, local_files_only=True)`、`pipeline(task, model=repo_id, local_files_only=True)`、`Model.from_pretrained(repo_id, local_files_only=True)`。如果某个高级接口不支持 `local_files_only=True`，禁止使用该高级接口，改用支持离线加载的底层接口或仅在必须时使用运行时注入的 `model_dir`。
+- 对 Hugging Face / ModelScope 的标准 repo-id 接口，不要暴露 `model_dir`，应在函数内部使用固定 `repo_id` 常量并启用 `local_files_only=True`。
+- 只有当模型加载必须依赖本地文件夹或文件路径时，才暴露 `model_dir: str = ''`，例如：自定义 `torch.load(model_dir + '/xxx.pth')`、ONNX/权重文件、GitHub 资产、或必须以本地目录作为 `from_pretrained(model_dir)` 输入的仓库快照。
+- 如果检索附加信息列出了“已下载的外部资产文件”，这些文件位于运行时注入的 `model_dir` 下；代码应按文件名相对 `model_dir` 读取，禁止假设权重已在当前工作目录。
+- 禁止在推理时隐式联网下载；不要硬编码 Hugging Face / ModelScope 缓存路径。
 
 ## 2. 算子签名与规范
-- 函数名必须以 `safe_` 开头，例如：`def safe_cyberpunk_filter(...)`
-- 第一个参数**必须**是输入图像：`img: np.ndarray`。
-- 必须将可以调节的变量（如强度、阈值、卷积核大小）暴露为函数的入参，并赋予合理的默认值。
-- 函数的返回值**必须**是处理后的图像：`np.ndarray`。
+* 函数名必须以 `safe_` 开头，例如：`def safe_cyberpunk_filter(...)`
+* 第一个参数**必须**是输入图像：`img: np.ndarray`。
+* 当深度学习模型结构无法通过库函数直接加载时，允许在 `safe_` 函数前定义必要的顶层辅助类或辅助函数，例如 `torch.nn.Module` 子类；这些辅助类必须只服务于当前算子，不得执行文件系统扫描、网络访问或进程级操作。
+  - 辅助类允许定义 `__init__` 和 `forward` 等普通模型方法，初始化父类时使用 `super().__init__()`。
+  - 优先使用 `torch.nn.Module`、`torch.nn.Sequential`、`torch.nn.Conv2d` 等完整命名；如确需导入别名，只能从允许库中导入，例如 `import torch.nn as nn`、`import torch.nn.functional as F`。
+  - 模型实例、预处理器和权重必须在 `safe_` 函数内部按 `cache` 单例加载，禁止在模块顶层实例化大模型或读取权重。
+* 函数会被多次运行，如果有重复使用的重加载内容，必须暴露 `cache: dict | None = None` 入参。
+  - 利用`dict`的引用传递，使用单例模式设计，把重复使用的内容存储在特定的键值对中。
+  - 键必须以当前算子名称作为前缀，正确: `cache['anime_style_v1_model']`，错误：`cache['model']`
+  - 仅允许缓存模型实例（如 nn.Module, Pipeline）、分词器（Tokenizer）、处理器（Processor）等关键实例。**严禁** 将任何图像数据、Tensor 张量等中间结果放入 cache。
+  - 在将模型存入 cache 前，必须显式地将其 .to(device)，以确保后续调用时设备匹配。
+* 深度学习推理算子必须暴露 `device: str = 'cpu'` 和其他关键参数（如`tile_size`）为入参，并赋予合理的默认值。`device`必须要有确认和回落到`cpu`的逻辑。
+* 仅当加载逻辑必须使用本地文件夹/文件路径时，才暴露 `model_dir: str = ''` 入参，并优先使用调用方提供的本地目录；repo-id 驱动的 `from_pretrained` / `pipeline` 不需要暴露 `model_dir`。
+* 若算子含高显存参数（例如 `tile_size`、`patch_size`、`batch_size`、`chunk_size`），必须显式暴露这些参数，不得隐藏在函数体中。
+* 可使用 `runtime = cache.get("__runtime__", {})` 读取运行时偏好（`preferred_device`、`performance_profile`、`device_info`），并据此设置默认策略。
+* 必须实现 OOM 自动回落：捕获显存不足异常后，自动降低高显存参数并在 `cache` 中记录可用参数（例如 `cache['<tool>_fallback']`），后续调用优先复用。
+* 必须将可以调节的变量（如强度、阈值、卷积核大小）暴露为函数的入参，并赋予合理的默认值。
+* 函数的返回值**必须**是处理后的图像：`np.ndarray`。
 
 ## 3. 极致的防呆处理 (Defensive Programming)
 系统是自动化的，输入图像的格式可能会千奇百怪，你必须确保代码绝对不会导致进程崩溃：
@@ -75,17 +146,35 @@ class ToolMakerAgent(BaseAgent):
 
 ```json
 {
-  "code": "完整的 Python 函数代码字符串，注意换行和缩进",
+  "code": "完整的 Python 代码字符串，可包含必要的辅助类/辅助函数，但必须包含一个 safe_ 算子函数，注意换行和缩进",
   "schema": {
     "name": "函数名称，必须与代码中的 def 名称一致",
     "description": "一句话解释该算子的作用以及适用场景",
     "parameters": {
       "参数1": {
-        "type": "float/int/bool",
-        "range": [最小值, 最大值], // 或 "options": [可选参数1, 可选参数2, 可选参数3]
+        "type": "float/int/bool/str",
+        "range": [最小值, 最大值],
         "description": "解释该参数的作用，以及值变大变小会带来什么影响"
+      },
+      "参数2": {
+        "type": "float/int/bool/str",
+        "options": ["可选参数1", "可选参数2"],
+        "description": "非连续参数使用 options"
+      },
+      "cache": {
+        "type": "dict",
+        "description": "单例模式使用的缓存字典"
+      },
+      // 如果编写深度学习工具，必须包含 device
+      "device": {
+        "type": "str",
+        "description": "推理设备，如 cpu/cuda/mps/xpu/npu"
+      },
+      // 只有当工具必须直接读取本地模型文件/目录时，才包含 model_dir
+      "model_dir": {
+        "type": "str",
+        "description": "本地模型目录（由外部传入）"
       }
-      // 不要把 img 包含在 parameters 中
     }
   }
 }
@@ -112,8 +201,20 @@ class ToolMakerAgent(BaseAgent):
   }
 }
 ```
-        """
-        return prompt.strip()
+        """.replace(
+            "$LEARNING_LIBS$",
+            self._allowed_optional_libraries_text(),
+            1
+        ).replace(
+            "$LEARNING_POLICY$",
+            (
+                "当前会话允许深度学习工具。若使用模型推理，必须显式暴露 `device` 并实现 OOM 回落；仅本地文件路径加载场景需要暴露 `model_dir`。"
+                if self.allow_learning else
+                "当前会话禁用深度学习工具。你必须仅实现传统图像处理算法，不得生成任何依赖模型权重的代码。"
+            ),
+            1
+        )
+        return prompt.strip(' \n')
     
     def generate_prompt(self, 
         user_intent: str = '', 

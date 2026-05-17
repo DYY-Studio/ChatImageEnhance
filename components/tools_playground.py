@@ -1,10 +1,12 @@
 import streamlit as st
 import time
+import gc
+import torch
 
 from streamlit.delta_generator import DeltaGenerator
 
 from tools import global_registry
-from utils import get_thumbnail_img_nocache, get_thumbnail_img, get_thumbnail_size
+from utils import get_thumbnail_img_nocache, get_thumbnail_img, get_thumbnail_size, get_available_devices
 from components.image_comparison import image_comparison
 
 def render_playground(container: DeltaGenerator | None = None):
@@ -26,22 +28,25 @@ def render_playground(container: DeltaGenerator | None = None):
                 st.toggle("启用", value=not tool_info.get('is_disabled', False))
 
         params = schema['parameters']
-        param_names = list(params.keys())
+        param_names = [k for k in params.keys() if k not in ('cache', 'device', 'model_dir', )]
         with param_col:
             with st.container(border=True, height="stretch"):
                 st.subheader("参数")
-                st.table({
-                    "名称": param_names,
-                    "取值": [
-                        (
-                            f"range: {params[param_name]['range']}"
-                            if 'range' in params[param_name]
-                            else f"options: {params[param_name].get('options', '获取失败')}"
-                        ) 
-                        for param_name in param_names
-                    ],
-                    "介绍": [params[param_name]['description']  for param_name in param_names]
-                })
+                if param_names:
+                    st.table({
+                        "名称": param_names,
+                        "取值": [
+                            (
+                                f"range: {params[param_name]['range']}"
+                                if 'range' in params[param_name]
+                                else f"options: {params[param_name].get('options', '获取失败')}"
+                            ) 
+                            for param_name in param_names
+                        ],
+                        "介绍": [params[param_name]['description']  for param_name in param_names]
+                    })
+                else:
+                    st.markdown("无参数")
 
         with st.container(border=True):
             st.subheader("试用")
@@ -50,16 +55,25 @@ def render_playground(container: DeltaGenerator | None = None):
             for name, param in params.items():
                 with param_tune_col:
                     with st.container(border=True):
-                        if 'range' in param:
-                            params_try[name] = st.slider(
-                                name, min_value=param['range'][0], max_value=param['range'][-1],
-                                help=param.get("description")
-                            )
-                        elif 'options' in param:
-                            params_try[name] = st.selectbox(
-                                name, param['options'],
-                                help=param.get("description")
-                            )
+                        if name in ('cache', 'device', 'model_dir', ):
+                            if name == 'device':
+                                params_try[name] = st.selectbox(name, get_available_devices())
+                            elif name == 'cache':
+                                params_try[name] = dict()
+                                st.markdown('cache')
+                            elif name == 'model_dir':
+                                params_try[name] = global_registry.resolve_model_dir(schema)
+                        else:
+                            if 'range' in param:
+                                params_try[name] = st.slider(
+                                    name, min_value=param['range'][0], max_value=param['range'][-1],
+                                    help=param.get("description")
+                                )
+                            elif 'options' in param:
+                                params_try[name] = st.selectbox(
+                                    name, param['options'],
+                                    help=param.get("description")
+                                )
             with param_tune_col:
                 do_try = st.toggle("自动尝试", disabled=st.session_state['img_bgr'] is None)
                 if not do_try:
@@ -88,5 +102,13 @@ def render_playground(container: DeltaGenerator | None = None):
                             "原图",
                             "套用后"
                         )
+
+                        if 'cache' in params_try:
+                            params_try['cache'].clear()
+                        if 'device' in params_try:
+                            if (device_module := getattr(torch, params_try['device'].lower(), False)):
+                                if (empty_cache := getattr(device_module, 'empty_cache', False)):
+                                    empty_cache()
+                        gc.collect()
                     except Exception as e:
                         st.error(str(e))

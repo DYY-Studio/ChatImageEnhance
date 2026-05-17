@@ -1,9 +1,33 @@
 import streamlit as st
 import cv2
 import numpy as np
+import os
+import gc
+import torch
 
-from queue import Queue
+from utils import *
+from constants import *
+
+if "HF_ENDPOINT" not in os.environ:
+    os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+os.environ["TORCH_HOME"] = str(get_executable_dir() / 'caches/model_assets/torch')
+os.environ["HF_HOME"] = str(get_executable_dir() / 'caches/model_assets/huggingface')
+os.environ["MODELSCOPE_CACHE"] = str(get_executable_dir() / "caches/model_assets/modelscope")
+os.environ["PIP_CACHE_DIR"] = str(get_executable_dir() / 'caches/pip')
+
+import transformers
+transformers.logging.set_verbosity_error()
+
+from collections import deque
 from streamlit_local_storage import LocalStorage
+
+from components.optuna_callbacks import StOptunaCallbackImg
+from components.tool_search import StEnrichFindings, StSearch
+from components.llm_response_handler import StStreamResHandler
+from components.image_analyze import image_analyze
+from components.tools_playground import render_playground
+from components.debug_toolmaker import render_toolmaker
+from components import get_thumbnail_img_wrapper, render_message_content, get_previous_img, generate_user_prompt, extract_funcs
 
 from core.orchestrator import Orchestrator
 from core.evaluator import Evaluator
@@ -12,16 +36,6 @@ from core.searcher import Searcher
 from agents.coder import CoderAgent
 from agents.evaluator import EvaluatorAgent
 from agents.toolmaker import ToolMakerAgent
-
-from components.optuna_callbacks import StOptunaCallbackImg
-from components.tool_search import StSearch
-from components.llm_response_handler import StStreamResHandler
-from components.image_analyze import image_analyze
-from components.tools_playground import render_playground
-from components import get_thumbnail_img_wrapper, render_message_content, get_previous_img, generate_user_prompt
-
-from utils import *
-from constants import *
 
 localS = LocalStorage()
 
@@ -44,10 +58,20 @@ if 'proxy_url' not in st.session_state:
     st.session_state['proxy_url'] = localS.getItem('proxy_url') or ""
 if 'github_token' not in st.session_state:
     st.session_state['github_token'] = localS.getItem('github_token') or ""
+if 'huggingface_token' not in st.session_state:
+    st.session_state['huggingface_token'] = localS.getItem('huggingface_token') or ""
+if 'modelscope_token' not in st.session_state:
+    st.session_state['modelscope_token'] = localS.getItem('modelscope_token') or ""
 if 'reasoning_effort' not in st.session_state:
     st.session_state['reasoning_effort'] = None
 if 'process_img_max_side' not in st.session_state:
     st.session_state['process_img_max_side'] = 1500
+if 'device_learning_process' not in st.session_state:
+    st.session_state['device_learning_process'] = "cpu"
+if 'process_profile' not in st.session_state:
+    st.session_state['process_profile'] = "balanced"
+if 'process_operator_preference' not in st.session_state:
+    st.session_state['process_operator_preference'] = "prefer_traditional"
 if 'img_bgr' not in st.session_state:
     st.session_state['img_bgr'] = None
 if 'running' not in st.session_state:
@@ -65,14 +89,149 @@ def get_cv2_inter_mapping() -> dict[int, str]:
         if name.startswith('INTER_') and not any(x in name for x in ['MAX', 'TAB', 'BITS'])
     }
 
+@st.cache_resource
+def get_model_cache():
+    return dict()
+
+PROCESS_OPERATOR_PREFERENCES = [
+    "traditional_only",
+    "prefer_traditional",
+    "prefer_learning",
+    "learning_only"
+]
+
+PROCESS_OPERATOR_PREFERENCE_LABELS = {
+    "traditional_only": "仅传统",
+    "prefer_traditional": "偏好传统",
+    "prefer_learning": "偏好深度学习",
+    "learning_only": "仅深度学习",
+}
+
+def normalize_process_operator_preference(
+    value: str | None,
+    allow_learning_process: bool
+) -> str:
+    mode = str(value or "").strip().lower()
+    alias = {
+        "traditional_only": "traditional_only",
+        "only_traditional": "traditional_only",
+        "traditional": "traditional_only",
+        "仅传统": "traditional_only",
+        "prefer_traditional": "prefer_traditional",
+        "traditional_preferred": "prefer_traditional",
+        "偏好传统": "prefer_traditional",
+        "prefer_learning": "prefer_learning",
+        "prefer_deep_learning": "prefer_learning",
+        "偏好深度学习": "prefer_learning",
+        "learning_only": "learning_only",
+        "only_learning": "learning_only",
+        "only_deep_learning": "learning_only",
+        "deep_learning_only": "learning_only",
+        "仅深度学习": "learning_only",
+    }
+    normalized = alias.get(mode, "prefer_traditional")
+    if not allow_learning_process:
+        return "traditional_only"
+    return normalized
+
+def get_process_operator_preference_label(value: str) -> str:
+    return PROCESS_OPERATOR_PREFERENCE_LABELS.get(value, value)
+
+def build_runtime_hint(
+    allow_learning_process: bool,
+    process_device: str,
+    process_profile: str,
+    device_info_text: str,
+    process_operator_preference: str | None = None
+) -> str:
+    lines = [
+        "--- 运行时约束 ---",
+        f"深度学习处理: {'enabled' if allow_learning_process else 'disabled'}",
+    ]
+    if process_operator_preference:
+        lines.append(
+            f"处理算子偏好: {get_process_operator_preference_label(process_operator_preference)}"
+        )
+    lines.extend([
+        f"处理设备偏好: {process_device}",
+        f"性能档位偏好: {process_profile}",
+        "设备信息:",
+        device_info_text,
+        "---",
+    ])
+    return "\n".join(lines).strip("\n")
+
+def get_allowed_search_sources(
+    allow_learning_process: bool,
+    operator_preference: str
+) -> tuple[str, ...]:
+    if (not allow_learning_process) or operator_preference == "traditional_only":
+        return ("github",)
+    return ("github", "huggingface", "modelscope")
+
+def unload_models():
+    devices = set([
+        (
+            next(model_cache['model'].parameters()).device.type
+            if isinstance(model_cache, dict)
+            else next(model_cache.parameters()).device.type
+        )
+        for model_cache in get_model_cache().values()
+    ])
+    get_model_cache().clear()
+    for device in devices:
+        if device != 'cpu':
+            if (device_module := getattr(torch, device, False)):
+                if (empty_cache := getattr(device_module, 'empty_cache', False)):
+                    empty_cache()
+    gc.collect()
+
 with st.sidebar:
     st.header("设置")
-    with st.expander("模式", expanded=True):
-        st.segmented_control(
-            "执行模式", ["Chat", "Playground"], 
+    with st.expander("基本", expanded=True):
+        st.pills(
+            "执行模式", ["Chat", "Playground", "ToolMaker"], 
             required=True, default="Chat", key='ui_scene',
             help="选择Playground以查看并试用所有可用的算子"
         )
+        enable_learning = st.toggle('启用深度学习')
+        if enable_learning:
+            with st.container(border=True):
+                if st.toggle("用于评价", help="约占用3GB内存", key='enable_learning_evaluator'):
+                    st.selectbox("评价模型运行设备", get_available_devices(), key='device_learning_evaluator')
+                if st.toggle("用于处理", key='enable_learning_process'):
+                    st.selectbox("处理模型运行设备", get_available_devices(), key='device_learning_process')
+                    st.selectbox(
+                        "处理显存策略",
+                        ["fast", "balanced", "low_memory"],
+                        key='process_profile',
+                        format_func=lambda x: {
+                            "fast": "高速",
+                            "balanced": "平衡（默认）",
+                            "low_memory": "低占用"
+                        }.get(x, x),
+                        help="用于高显存参数（如 tile_size）的默认倾向。实际回落由运行时自动完成。"
+                    )
+                    current_process_operator_preference = normalize_process_operator_preference(
+                        st.session_state.get("process_operator_preference"),
+                        True
+                    )
+                    st.selectbox(
+                        "处理算子偏好",
+                        PROCESS_OPERATOR_PREFERENCES,
+                        index=PROCESS_OPERATOR_PREFERENCES.index(current_process_operator_preference),
+                        key='process_operator_preference',
+                        format_func=get_process_operator_preference_label,
+                        help="仅档位会在Schema注入前过滤算子；偏好档位会保留全量算子并在提示词中表达偏好。"
+                    )
+        else:
+            st.session_state['enable_learning_evaluator'] = False
+            st.session_state['enable_learning_process'] = False
+            st.session_state['device_learning_process'] = "cpu"
+            st.session_state['process_profile'] = "balanced"
+            if st.button("释放预载入模型", help="释放预载入到内存的模型", width='stretch', disabled=len(get_model_cache()) == 0):
+                unload_models()
+
     with st.expander("模型", expanded=True):
         api_url = st.text_input(
             "API URL (OpenAI 兼容端点)", 
@@ -99,6 +258,8 @@ with st.sidebar:
         )
 
         is_visual_model = st.toggle("该模型支持视觉输入", key="is_visual_model")
+
+        st.slider("代码问题最多重试次数", value=3, min_value=3, max_value=10, key="llm_coding_max_retries")
 
         with st.expander("高级"):
             reasoning_effort = st.selectbox(
@@ -129,15 +290,19 @@ with st.sidebar:
         )
 
     with st.expander("代码检索", expanded=True):
-        st.text("这是什么", help="缺少工具时，使用GitHub REST API检索相关的代码，需要填写Token才能使用")
+        st.text("这是什么", help="缺少工具时，可通过 GitHub / HuggingFace / ModelScope 检索相关代码或模型。")
         github_token = st.text_input("GitHub Token", type='password', key="github_token")
+        huggingface_token = st.text_input("HuggingFace Token", type='password', key="huggingface_token")
+        modelscope_token = st.text_input("ModelScope Token", type='password', key="modelscope_token")
         search_steps_limit = st.slider(
-            "搜索步骤数限制", 10, 100, 30, step=1, disabled=not github_token,
-            help="限制最多 LLM 调用次数，防止难以找到时无限运行"
+            "搜索步骤数限制", 10, 100, 30, step=1,
+            help="限制最多 LLM 调用次数，防止难以找到时无限运行",
+            key="search_steps_limit"
         )
         search_interval = st.slider(
-            "强制步骤间隔 (秒)", 0.0, 60.0, 5.0, step=0.5, disabled=not github_token,
-            help="强行在两次请求之间插入间隔，防止请求过于频繁"
+            "强制步骤间隔 (秒)", 0.0, 60.0, 5.0, step=0.5,
+            help="强行在两次请求之间插入间隔，防止请求过于频繁",
+            key="search_interval"
         )
     
     with st.expander("处理", expanded=True):
@@ -187,7 +352,7 @@ with st.sidebar:
                     key="process_img_max_side"
                 )
 
-    if (cache_api := fetch_button and st.session_state.models) or github_token:
+    if (cache_api := fetch_button and st.session_state.models) or github_token or huggingface_token or modelscope_token:
         with st.container(height=1, border=False):
             if cache_api:
                 if api_url: localS.setItem("api_url", api_url, "locals_api_url")
@@ -202,6 +367,91 @@ with st.sidebar:
             if github_token: localS.setItem("github_token", github_token, "locals_github_token")
             elif localS.getItem("github_token"): localS.deleteItem("github_token", "del_locals_github_token")
 
+            if huggingface_token: localS.setItem("huggingface_token", huggingface_token, "locals_huggingface_token")
+            elif localS.getItem("huggingface_token"): localS.deleteItem("huggingface_token", "del_locals_huggingface_token")
+
+            if modelscope_token: localS.setItem("modelscope_token", modelscope_token, "locals_modelscope_token")
+            elif localS.getItem("modelscope_token"): localS.deleteItem("modelscope_token", "del_locals_modelscope_token")
+
+def get_orchestrator():
+    allow_learning_process = bool(st.session_state.get("enable_learning_process", False))
+    process_operator_preference = normalize_process_operator_preference(
+        st.session_state.get("process_operator_preference"),
+        allow_learning_process
+    )
+    process_device = (
+        st.session_state.get('device_learning_process', 'cpu')
+        if allow_learning_process else 'cpu'
+    )
+    process_profile = (
+        st.session_state.get('process_profile', 'balanced')
+        if allow_learning_process else 'balanced'
+    )
+    toolmaker_allow_learning = (
+        allow_learning_process and process_operator_preference != "traditional_only"
+    )
+    device_info_text = format_device_info_for_prompt(get_device_info_subprocess())
+
+    client = get_openai_client(st.session_state.api_url, st.session_state.api_key, st.session_state.proxy_url)
+    orch = Orchestrator(
+        CoderAgent(
+            client, selected_model, 
+            reasoning_effort=st.session_state.reasoning_effort, 
+            low_res=low_res_process,
+            allow_learning=allow_learning_process,
+            operator_preference=process_operator_preference
+        ),
+        EvaluatorAgent(
+            client, selected_model, 
+            reasoning_effort=st.session_state.reasoning_effort,
+            allow_learning=st.session_state.enable_learning_evaluator
+        ),
+        ToolMakerAgent(
+            client, selected_model,
+            reasoning_effort=st.session_state.reasoning_effort,
+            allow_learning=toolmaker_allow_learning
+        ),
+        allow_learning_process=allow_learning_process,
+        process_device=process_device,
+        process_profile=process_profile,
+        device_info=device_info_text,
+        max_llm_retries=st.session_state['llm_coding_max_retries']
+    )
+    return client, orch
+
+if st.session_state.ui_scene in ("ToolMaker", "Chat"):
+    allow_learning_process = bool(st.session_state.get("enable_learning_process", False))
+    process_operator_preference = normalize_process_operator_preference(
+        st.session_state.get("process_operator_preference"),
+        allow_learning_process
+    )
+    process_device = (
+        st.session_state.get('device_learning_process', 'cpu')
+        if allow_learning_process else 'cpu'
+    )
+    process_profile = (
+        st.session_state.get('process_profile', 'balanced')
+        if allow_learning_process else 'balanced'
+    )
+    device_info_text = format_device_info_for_prompt(get_device_info_subprocess())
+    runtime_hint = build_runtime_hint(
+        allow_learning_process,
+        process_device,
+        process_profile,
+        device_info_text,
+        process_operator_preference
+    )
+    toolmaker_runtime_hint = build_runtime_hint(
+        allow_learning_process,
+        process_device,
+        process_profile,
+        device_info_text
+    )
+
+if st.session_state.ui_scene == "ToolMaker":
+    render_toolmaker(get_orchestrator()[1])
+    st.stop()
+
 upload = st.file_uploader("上传图像", ["png", "jpg", "jpeg"])
 
 if 'messages' not in st.session_state:
@@ -215,7 +465,30 @@ if 'ui_scene' not in st.session_state:
 
 @st.cache_resource
 def get_evaluator(raw_array: np.ndarray):
-    return Evaluator(raw_array)
+    return Evaluator(raw_array, get_model_cache())
+
+@st.cache_resource
+def get_thumb_evaluator(raw_array: np.ndarray, size: tuple[int, int]):
+    return Evaluator(raw_array, get_model_cache())
+
+def append_run_error_message(error_text: str):
+    error_text = str(error_text or "运行失败，未返回详细错误。").strip()
+    summary = error_text
+    details = ""
+    marker = "\n\n错误详情：\n"
+    if marker in error_text:
+        summary, details = error_text.split(marker, maxsplit=1)
+        summary = summary.strip()
+        details = details.strip()
+
+    error_msg = {
+        "role": "assistant",
+        "content": summary,
+        "error": True,
+        "error_details": details,
+    }
+    st.session_state.messages.append(error_msg)
+    render_message_content(error_msg, len(st.session_state.messages) - 1)
 
 # 如果有历史结果，并在界面顶部展示原图与当前最佳进度的对比
 if upload:
@@ -223,8 +496,6 @@ if upload:
     st.session_state['img_bgr'] = img_bgr
     img_bgr_preview_bytes = get_thumbnail_img_wrapper(img_bgr, 'binary')
 
-    evaluator = get_evaluator(img_bgr)
-    st.session_state['evaluator'] = evaluator
     top_preview_placeholder = st.empty()
 
     st.subheader("原图")
@@ -233,6 +504,28 @@ if upload:
         caption=f"{img_bgr.shape[1]}x{img_bgr.shape[0]}, {img_bgr.shape[2]} Channel(s)"
     )
     st.divider()
+
+    if st.session_state.ui_scene == "Chat":
+        wait_init = st.empty()
+        with wait_init:
+            evaluator = get_evaluator(img_bgr)
+            st.session_state['evaluator'] = evaluator
+            # st.session_state['process_evaluator'] = evaluator
+
+            # if st.session_state.low_res_process:
+            #     resized, thumb_size = get_thumbnail_size(img_bgr, st.session_state.process_img_max_side)
+            #     if resized:
+            #         st.session_state['process_evaluator'] = get_thumb_evaluator(
+            #             img_bgr, thumb_size
+            #         )
+
+        if st.session_state['enable_learning_evaluator']:
+            with wait_init:
+                with st.spinner("正在载入模型，耗时较长，请耐心等待..."):
+                    evaluator.preload_models()
+        
+        with wait_init:
+            st.empty()
 else:
     st.session_state.messages.clear()
     st.session_state['best_bgr'] = None
@@ -240,7 +533,10 @@ else:
     st.session_state['evaluator'] = None
     load_bgr_img_from_file.clear()
     get_thumbnail_img.clear()
+    unload_models()
+    extract_funcs.clear()
     get_evaluator.clear()
+    get_thumb_evaluator.clear()
     st.stop()
 
 if st.session_state.ui_scene == "Playground":
@@ -250,6 +546,9 @@ if st.session_state.ui_scene != "Chat":
     st.stop()
     # --- 渲染历史聊天记录 ---
 
+if not st.session_state.messages:
+    extract_funcs.clear()
+    
 for i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         render_message_content(msg, i)
@@ -310,12 +609,7 @@ if user_feedback:
             
             st.rerun()
 
-        client = get_openai_client(st.session_state.api_url, st.session_state.api_key, st.session_state.proxy_url)
-        orch = Orchestrator(
-            CoderAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort, low_res=low_res_process),
-            EvaluatorAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort),
-            ToolMakerAgent(client, selected_model, reasoning_effort=st.session_state.reasoning_effort)
-        )
+        client, orch = get_orchestrator()
 
         with (main_status := st.status("🛠️ 根据反馈调整并运行...", expanded=True)):
             with (eva_status := st.status("📝 LLM 调整评价策略", state="error")):
@@ -330,7 +624,7 @@ if user_feedback:
                 with preview_tab: best_img = st.empty()
                 with data_tab: table_placeholder = st.empty()
 
-            best_queue = Queue()
+            best_queue = deque(maxlen=1)
             prev_img_bgr = get_previous_img(len(st.session_state.messages))
             # ===== [修改] 创建回调时传入自适应早停参数 =====
             callback = StOptunaCallbackImg(
@@ -356,9 +650,14 @@ if user_feedback:
 
             evaluate_handler = StStreamResHandler(eva_status, eva_thinking_container)
 
+            img_to_process = st.session_state['best_bgr'] if step_by_step and st.session_state['best_bgr'] is not None else img_bgr
+
             for t, body in orch.prepare_stream(
-                image=img_bgr, 
-                user_prompt=generate_user_prompt(user_feedback, True, True, step_by_step)
+                image=img_to_process,
+                model_cache=get_model_cache(),
+                device=st.session_state.get('device_learning_evaluator'),
+                user_prompt=f"{generate_user_prompt(user_feedback, True, True, step_by_step)}\n\n{runtime_hint}",
+                max_side=process_img_max_side if low_res_process else 0
             ):
                 if t == "CODE_EVALUATE.START":
                     eva_status.update(state="running")
@@ -369,6 +668,15 @@ if user_feedback:
                     evaluate_handler.thinking_end()
                 elif t == "CODE_EVALUATE.END":
                     evaluate_handler.content_end()
+                elif t == "CODE_EVALUATE.ERROR_RETRY":
+                    eva_status.update(label="📝 评价策略验证失败，正在重试", state="error")
+                    with eva_thinking_container:
+                        st.warning(body)
+                elif t == "FATAL_ERROR":
+                    eva_status.update(state="error")
+                    main_status.update(label="本轮运行失败", state="error")
+                    append_run_error_message(body)
+                    st.stop()
                 elif t == "FINISH":
                     eva_status.update(state="complete")
                     evaluate_code_str = body
@@ -382,20 +690,18 @@ if user_feedback:
                 search_result = dict()
                 coder_handler = StStreamResHandler(code_status, code_thinking_container)
 
-                img_to_process = st.session_state['best_bgr'] if step_by_step and st.session_state['best_bgr'] is not None else img_bgr
-
                 orch.coder.rebuild_system_prompt()
                 for t, body in orch.process_stream(
                     image=img_to_process,
                     evaluate_code_str=evaluate_code_str,
                     best_queue=best_queue,
-                    user_prompt=generate_user_prompt(user_feedback, True, True, step_by_step),
+                    user_prompt=f"{generate_user_prompt(user_feedback, True, True, step_by_step)}\n\n{runtime_hint}",
                     n_trials=n_trials,
                     callbacks=[callback],
                     max_side=process_img_max_side if low_res_process else 0
                 ):
                     if t == "CODE.START":
-                        pass
+                        code_status.update(label="🧠 LLM 调整增强代码", state="running")
                     elif t == "CODE.REASONING":
                         coder_handler.thinking_chunk(body)
                     elif t == "CODE.STREAM":
@@ -404,31 +710,62 @@ if user_feedback:
                     elif t == "CODE.END":
                         coder_handler.content_end()
                         process_code_str = body
+                    elif t == "CODE.ERROR":
+                        code_status.update(label="🧠 增强代码执行失败，正在反馈给 LLM 重试", state="error")
+                        with code_thinking_container:
+                            st.warning(body)
                     elif t == "OPTUNA.START":
                         optuna_status.update(state="running")
+                    elif t == "OPTUNA.END":
+                        optuna_status.update(state="complete")
+                    elif t == "FATAL_ERROR":
+                        code_status.update(state="error")
+                        optuna_status.update(state="error")
+                        main_status.update(label="本轮运行失败", state="error")
+                        append_run_error_message(body)
+                        st.stop()
                     elif t == "FINISH":
                         optuna_status.update(state="complete")
                         # ===== [修改] 解包返回值，获取实际trial数 =====
                         best_bgr, best_params, log, actual_n_trials = body
 
                         coding_finish = True
-                    
+                        break
+
                     elif t == "TOOL_REQUEST":
                         code_status.update(state='error')
                         tool_request = body['description']
 
-                        if github_token:
+                        if github_token or huggingface_token or modelscope_token:
                             with main_container:
                                 with (tool_status := st.status("⌨️ LLM 编写额外工具", state="error")):
                                     search_container = st.container(border=False)
 
                                 tool_status.update(state='running')
                                 if search_container:
-                                    if github_token:
-                                        searcher = Searcher(github_token, client, selected_model)
-                                        search_result: dict = StSearch(
-                                            searcher, tool_request, search_container, search_steps_limit, search_interval
-                                        )
+                                    allow_learning_process = bool(st.session_state.get("enable_learning_process", False))
+                                    process_operator_preference = normalize_process_operator_preference(
+                                        st.session_state.get("process_operator_preference"),
+                                        allow_learning_process
+                                    )
+                                    allowed_search_sources = get_allowed_search_sources(
+                                        allow_learning_process,
+                                        process_operator_preference
+                                    )
+                                    searcher = Searcher(
+                                        client, selected_model,
+                                        github_token=github_token,
+                                        huggingface_token=huggingface_token,
+                                        modelscope_token=modelscope_token,
+                                        allowed_sources=allowed_search_sources
+                                    )
+                                    search_result = StSearch(
+                                        searcher, tool_request, search_container, search_steps_limit, search_interval
+                                    )
+                                    if isinstance(search_result, dict):
+                                        search_result = StEnrichFindings(searcher, search_result, search_container)
+                                        if search_result.get("download_error"):
+                                            st.warning(f"模型资产下载失败：{search_result['download_error']}")
                         break
                 
                 if tool_request:
@@ -443,7 +780,22 @@ if user_feedback:
 
                     toolmaker_handler = StStreamResHandler(toolmaker_status, toolmaker_container)
                         
-                    for t, body in orch.toolmaker_stream(tool_request, search_result):
+                    runtime_imports = (
+                        search_result.get("additional_imports")
+                        if isinstance(search_result, dict) else None
+                    )
+                    runtime_packages = (
+                        search_result.get("additional_packages")
+                        if isinstance(search_result, dict) else None
+                    )
+
+                    for t, body in orch.toolmaker_stream(
+                        tool_request,
+                        search_result,
+                        additional_imports=runtime_imports,
+                        additional_packages=runtime_packages,
+                        runtime_context=toolmaker_runtime_hint
+                    ):
                         if t == "CODE_TOOL.STREAM":
                             toolmaker_handler.content_chunk(body)
                             toolmaker_handler.thinking_end()
@@ -457,22 +809,37 @@ if user_feedback:
                                 st.info("完成！")
                             toolmaker_handler.content_end()
                         elif t == "ERROR_RETRY":
+                            with toolmaker_placeholder:
+                                st.warning(body)
                             with main_container:
                                 with tool_status:
                                     with (toolmaker_status := st.status("⌨️ 编写工具", state="error")):
                                         toolmaker_container = st.container(border=False)
                             
                             toolmaker_handler = StStreamResHandler(toolmaker_status, toolmaker_container)
+                        elif t == "FATAL_ERROR":
+                            tool_status.update(state="error")
+                            main_status.update(label="本轮运行失败", state="error")
+                            append_run_error_message(body)
+                            st.stop()
                         elif t == "FINISH":
+                            body["additional_imports"] = runtime_imports or []
+                            body["additional_packages"] = runtime_packages or []
                             new_tool = body
 
         # --- 收尾与状态更新 ---
         if best_bgr is None:
-            st.error("此轮运行失败，请尝试重新输入或更改要求。")
+            main_status.update(label="本轮运行失败", state="error")
+            append_run_error_message("此轮运行失败：未得到可用增强结果。请调整要求后重试。")
             st.stop()
         else:
             # ===== [新增] 根据实际trial数显示不同消息 =====
-            if actual_n_trials < n_trials:
+            if actual_n_trials == 0:
+                main_status.update(
+                    label=f"没有需要调优的参数", 
+                    state="complete"
+                )
+            elif actual_n_trials < n_trials:
                 main_status.update(
                     label=f"本轮调整结束（实际运行 {actual_n_trials}/{n_trials} 轮，已提前收敛）", 
                     state="complete"

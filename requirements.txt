@@ -9,3 +9,16 @@ streamlit-local-storage
 scikit-image
 PyGithub
 RestrictedPython
+
+modelscope
+torch
+torchvision
+transformers
+huggingface_hub
+diffusers
+trafilatura
+einops
+safetensors
+scipy
+open-clip-torch
+lpips

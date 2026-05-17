@@ -1,10 +1,13 @@
 import optuna
 import numpy as np
 import logging
+import re
+import traceback
 
 from sandbox.executor import SandboxExecutor
 from typing import Iterable, Callable
-from queue import Queue
+from collections import deque
+from optuna.trial import TrialState
 
 logger = logging.getLogger("BayesianOptimizer")
 
@@ -15,6 +18,9 @@ class BayesianOptimizer:
     def __init__(self, executor: SandboxExecutor):
         self.executor = executor
         self.study = optuna.create_study(direction="maximize")
+
+    def _has_trial(self, code_str: str):
+        return re.search(r"\w+?\.suggest_(int|float|categorical|(?:discrete_|log)?uniform)", code_str) is not None
 
     def run_inner_loop(self, 
         code_str: str, 
@@ -29,43 +35,78 @@ class BayesianOptimizer:
 
         返回: {'best_score': float, 'best_params': dict, 'best_img': np.ndarray, 'n_trials_used': int}
         """
+        unicache = dict()
+        last_error: str | None = None
+
         def objective(trial):
+            nonlocal unicache, last_error
             try:
-                result_img = self.executor.execute_pipeline(code_str, base_img, trial)
+                result_img = self.executor.execute_pipeline(code_str, base_img, trial, unicache)
                 score = self.executor.execute_evaluate(evaluate_code_str, result_img, base_img)
                 
                 if score <= -5000.0: 
                     raise optuna.TrialPruned()
                 return score
             except optuna.TrialPruned:
-                pass
+                raise
             except Exception as e:
-                logger.error("CODE EXEC ERROR", e)
+                last_error = traceback.format_exc()
+                logger.error("CODE EXEC ERROR: %s", e)
                 raise optuna.TrialPruned() # 代码执行错误，修剪该 trial
 
-        study = optuna.create_study(direction="maximize")
+        if not self._has_trial(code_str):
+            try:
+                return {
+                    "best_score": None,
+                    "best_params": None,
+                    "best_img": self.executor.execute_pipeline_direct(
+                        code_str, orig_img, {}, unicache
+                    ),
+                    "n_trials_used": 0
+                }
+            except Exception:
+                return {
+                    "best_score": None,
+                    "best_params": None,
+                    "best_img": None,
+                    "n_trials_used": 0,
+                    "error": traceback.format_exc(),
+                }
+
+        study = self.study
         study.optimize(objective, n_trials=n_trials, callbacks=callbacks)
         
         # ===== [新增] 记录实际使用的trial数 =====
         n_trials_used = len(study.trials)
+        completed_trials = [trial for trial in study.trials if trial.state == TrialState.COMPLETE]
+        if not completed_trials:
+            return {
+                "best_score": None,
+                "best_params": None,
+                "best_img": None,
+                "n_trials_used": n_trials_used,
+                "error": last_error or "所有 Optuna trial 都失败或被剪枝，未得到可用图像。",
+            }
         
         try:
             return {
                 "best_score": study.best_value,
                 "best_params": study.best_params,
                 "best_img": self.executor.execute_pipeline_direct(
-                    code_str, orig_img, study.best_params
+                    code_str, orig_img, study.best_params, unicache
                 ),
                 # ===== [新增] 返回实际使用的trial数 =====
                 "n_trials_used": n_trials_used
             }
         except:
+            last_error = traceback.format_exc()
             return {
                 "best_score": None,
                 "best_params": None,
                 "best_img": None,
                 # ===== [新增] 即使出错也返回实际trial数 =====
-                "n_trials_used": n_trials_used
+                "n_trials_used": n_trials_used,
+                "error": last_error,
             }
 
     def run_inner_loop_stream(self, 
@@ -73,7 +114,7 @@ class BayesianOptimizer:
         evaluate_code_str: str,
         base_img: np.ndarray, 
         orig_img: np.ndarray,
-        best_queue: Queue,
+        best_queue: deque[np.ndarray],
         n_trials: int = 30, 
         callbacks: Iterable[Callable[[optuna.study.Study, optuna.trial.FrozenTrial], None]] | None = None,
     ) -> dict:
@@ -87,10 +128,13 @@ class BayesianOptimizer:
         if orig_img is not None:
             logger.info(f"ORIG: {orig_img.shape[1]}x{orig_img.shape[0]}")
 
+        unicache = dict()
+        last_error: str | None = None
+
         def objective(trial: optuna.trial.Trial):
-            nonlocal code_str, evaluate_code_str, base_img
+            nonlocal code_str, evaluate_code_str, base_img, unicache, last_error
             try:
-                result_img = self.executor.execute_pipeline(code_str, base_img, trial)
+                result_img = self.executor.execute_pipeline(code_str, base_img, trial, unicache)
                 score = self.executor.execute_evaluate(evaluate_code_str, result_img, base_img)
                 
                 if score <= -5000.0: 
@@ -98,37 +142,70 @@ class BayesianOptimizer:
                 study = trial.study
                 try:
                     if score > study.best_value:
-                        best_queue.put(result_img)
+                        best_queue.append(result_img)
                 except:
-                    best_queue.put(result_img)
+                    best_queue.append(result_img)
                 return score
             except optuna.TrialPruned:
-                pass
+                raise
             except Exception as e:
-                logger.error("CODE EXEC ERROR", e)
+                last_error = traceback.format_exc()
+                logger.error("CODE EXEC ERROR: %s", e)
                 raise optuna.TrialPruned()  # 代码执行错误，修剪该 trial
+            
+        # 如果代码中没有 trial 可搜索的内容，则只执行一遍就返回
+        if not self._has_trial(code_str):
+            try:
+                return {
+                    "best_score": None,
+                    "best_params": None,
+                    "best_img": self.executor.execute_pipeline_direct(
+                        code_str, orig_img, {}, unicache
+                    ),
+                    "n_trials_used": 0
+                }
+            except Exception:
+                return {
+                    "best_score": None,
+                    "best_params": None,
+                    "best_img": None,
+                    "n_trials_used": 0,
+                    "error": traceback.format_exc(),
+                }
 
-        self.study.optimize(objective, n_trials=n_trials, callbacks=callbacks)
+        study = self.study
+        study.optimize(objective, n_trials=n_trials, callbacks=callbacks)
         
         # ===== [新增] 记录实际使用的trial数并打印日志 =====
-        n_trials_used = len(self.study.trials)
+        n_trials_used = len(study.trials)
         logger.info(f"实际使用 trial 数: {n_trials_used} / {n_trials}")
+        completed_trials = [trial for trial in study.trials if trial.state == TrialState.COMPLETE]
+        if not completed_trials:
+            return {
+                "best_score": None,
+                "best_params": None,
+                "best_img": None,
+                "n_trials_used": n_trials_used,
+                "error": last_error or "所有 Optuna trial 都失败或被剪枝，未得到可用图像。",
+            }
         
         try:
             return {
-                "best_score": self.study.best_value,
-                "best_params": self.study.best_params,
+                "best_score": study.best_value,
+                "best_params": study.best_params,
                 "best_img": self.executor.execute_pipeline_direct(
-                    code_str, orig_img, self.study.best_params
+                    code_str, orig_img, study.best_params, unicache
                 ),
                 # ===== [新增] 返回实际使用的trial数 =====
                 "n_trials_used": n_trials_used
             }
         except:
+            last_error = traceback.format_exc()
             return {
                 "best_score": None,
                 "best_params": None,
                 "best_img": None,
                 # ===== [新增] 即使出错也返回实际trial数 =====
-                "n_trials_used": n_trials_used
+                "n_trials_used": n_trials_used,
+                "error": last_error,
             }

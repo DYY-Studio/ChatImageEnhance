@@ -14,6 +14,220 @@ from typing import Literal, Callable
 
 logger = logging.getLogger("BaseComponents")
 
+def _normalize_import_list(values) -> list[str]:
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, (list, tuple, set)):
+        return []
+
+    normalized: list[str] = []
+    for item in values:
+        token = str(item or "").strip()
+        if not token:
+            continue
+        if token in normalized:
+            continue
+        normalized.append(token)
+    return normalized
+
+def _package_to_import_name(package: str) -> str | None:
+    token = str(package or "").strip()
+    if not token:
+        return None
+    token = token.split(";", maxsplit=1)[0].strip()
+    token = token.split("[", maxsplit=1)[0].strip()
+    token = re.split(r"(==|!=|>=|<=|>|<|~=)", token, maxsplit=1)[0].strip()
+    if not token:
+        return None
+
+    alias = {
+        "pillow": "PIL",
+        "opencv-python": "cv2",
+        "opencv-contrib-python": "cv2",
+        "opencv-python-headless": "cv2",
+        "opencv-contrib-python-headless": "cv2",
+        "scikit-image": "skimage",
+        "pyyaml": "yaml",
+        "huggingface-hub": "huggingface_hub",
+        "python-dateutil": "dateutil",
+        "beautifulsoup4": "bs4",
+    }
+    canonical = re.sub(r"[-_.]+", "-", token.lower())
+    if canonical in alias:
+        return alias[canonical]
+
+    return token.replace("-", "_")
+
+def _build_custom_tool_import_lines(tool_code: str, extra_imports: list[str] | None = None) -> list[str]:
+    # 基础依赖（与历史行为兼容）
+    imports = [
+        "import numpy as np",
+        "import cv2",
+        "import math",
+        "import skimage",
+        "import scipy",
+    ]
+
+    detected = set()
+    code_text = str(tool_code or "")
+    detection_map = {
+        "torch": r"\btorch\b",
+        "torchvision": r"\btorchvision\b",
+        "transformers": r"\btransformers\b",
+        "diffusers": r"\bdiffusers\b",
+        "modelscope": r"\bmodelscope\b",
+        "huggingface_hub": r"\bhuggingface_hub\b",
+        "PIL": r"\bPIL\b",
+    }
+    for mod_name, pattern in detection_map.items():
+        if re.search(pattern, code_text):
+            detected.add(mod_name)
+
+    for imp in _normalize_import_list(extra_imports):
+        root = imp.split(".", maxsplit=1)[0].strip()
+        if root:
+            detected.add(imp.strip())
+
+    existing_roots = {
+        line.replace("import ", "").replace(" as np", "").strip().split(".", maxsplit=1)[0]
+        for line in imports
+    }
+    for mod_name in sorted(detected):
+        root = mod_name.split(".", maxsplit=1)[0]
+        if root in existing_roots:
+            continue
+        imports.append(f"import {mod_name}")
+        existing_roots.add(root)
+
+    return imports
+
+def save_tool_to_local(tool: dict, overwrite: bool = True, status_key: str | None = None):
+    if not isinstance(tool, dict):
+        raise ValueError("工具对象无效")
+    if not isinstance(tool.get("schema"), dict):
+        raise ValueError("工具 schema 无效")
+
+    tool_schema = dict(tool['schema'])
+    tool_code = str(tool.get('code') or "")
+    if not tool_code.strip():
+        raise ValueError("工具代码为空")
+
+    tool_name = global_registry.sanitize_tool_name(tool_schema.get('name', ''))
+    _, custom_tool_dir, file_base = global_registry.get_custom_tool_paths(tool_name)
+    custom_tool_dir.mkdir(parents=True, exist_ok=True)
+
+    tool_yaml = file_base.with_suffix(".yaml")
+    tool_py = file_base.with_suffix(".py")
+    if (not overwrite) and (tool_yaml.exists() or tool_py.exists()):
+        raise FileExistsError(f"工具 {tool_name} 已存在")
+
+    extra_imports = _normalize_import_list(tool.get("additional_imports"))
+    if not extra_imports:
+        extra_imports = _normalize_import_list(tool_schema.get("additional_imports"))
+
+    extra_packages = _normalize_import_list(tool.get("additional_packages"))
+    if not extra_packages:
+        extra_packages = _normalize_import_list(tool_schema.get("additional_packages"))
+    for package in extra_packages:
+        import_name = _package_to_import_name(package)
+        if import_name and import_name not in extra_imports:
+            extra_imports.append(import_name)
+
+    # 将附加导入信息一并持久化，便于后续审计与二次编辑
+    if extra_imports:
+        tool_schema["additional_imports"] = extra_imports
+    if extra_packages:
+        tool_schema["additional_packages"] = extra_packages
+
+    tool_yaml.write_text(
+        yaml.dump(tool_schema, allow_unicode=True, indent=2),
+        encoding='utf-8'
+    )
+
+    imports_text = "\n".join(_build_custom_tool_import_lines(tool_code, extra_imports))
+    tool_py.write_text(
+        f"{imports_text}\n\n{tool_code}",
+        encoding='utf-8'
+    )
+
+    succ, err = global_registry.load_custom_tool(tool_name)
+    if status_key:
+        st.session_state[status_key] = {
+            "ok": bool(succ),
+            "message": (
+                f"工具 {tool_name} 已保存并加载成功"
+                if succ else
+                f"工具 {tool_name} 已保存，但加载失败：{err}"
+            )
+        }
+
+def render_tool_save_button(
+    tool: dict,
+    button_label: str = "🆕 保存新工具",
+    button_key: str | None = None,
+    allow_overwrite: bool = True
+):
+    status_key = f"{button_key}_status" if button_key else None
+    if status_key and status_key in st.session_state:
+        status = st.session_state.pop(status_key)
+        if status.get("ok"):
+            st.success(status.get("message", "工具已保存"))
+        else:
+            st.warning(status.get("message", "工具保存后加载失败"))
+
+    if not isinstance(tool, dict):
+        st.button(button_label, disabled=True, key=button_key)
+        return
+    if not isinstance(tool.get("schema"), dict):
+        st.button(button_label, disabled=True, key=button_key)
+        return
+
+    raw_tool_name = tool["schema"].get("name")
+    if not raw_tool_name:
+        st.button(button_label, disabled=True, key=button_key)
+        return
+    try:
+        tool_name = global_registry.sanitize_tool_name(raw_tool_name)
+        _, _, file_name = global_registry.get_custom_tool_paths(tool_name)
+    except Exception as e:
+        st.button(button_label, disabled=True, key=button_key)
+        st.warning(f"工具名不合法，已阻止保存：{e}")
+        return
+
+    has_local_tool = file_name.with_suffix(".yaml").exists() and file_name.with_suffix(".py").exists()
+
+    if has_local_tool and allow_overwrite:
+        st.button(
+            "♻️ 覆盖保存工具",
+            on_click=save_tool_to_local,
+            args=[tool, True, status_key],
+            key=button_key
+        )
+        if tool_name not in global_registry.tools:
+            succ, err = global_registry.load_custom_tool(tool_name)
+            if not succ and err:
+                st.warning(f"本地工具加载失败：{tool_name}，错误：{err}")
+    elif has_local_tool:
+        st.button(button_label, disabled=True, key=button_key)
+        if tool_name not in global_registry.tools:
+            succ, err = global_registry.load_custom_tool(tool_name)
+            if not succ and err:
+                st.warning(f"本地工具加载失败：{tool_name}，错误：{err}")
+    else:
+        global_registry.dynamic_unregister(tool_name)
+        st.button(
+            button_label,
+            on_click=save_tool_to_local,
+            args=[tool, False, status_key],
+            key=button_key
+        )
+
+    tool_load_error = global_registry.last_custom_tool_errors.get(tool_name)
+    if tool_load_error:
+        st.warning(f"本地工具存在加载异常：{tool_name}，错误：{tool_load_error}")
+
 def _extract_wrapper_source(func: Callable) -> str:
     """
     从工具模块或类中提取指定函数的源代码，并格式化为静态方法
@@ -107,22 +321,90 @@ def delete_message(idx: int, target_only: bool = False):
     if clear_encoded_cache:
         get_encoded_img.clear()
 
+@st.cache_resource()
+def extract_funcs(matches: list[str], used_functions: dict):
+    for called_func_name in set(matches):  # 去重
+        logger.info(f"正在处理函数: {called_func_name}")
+        
+        # 尝试通过注册表映射查找实际函数
+        if called_func_name in global_registry.tools:
+            func: Callable = global_registry.tools[called_func_name]['func']
+            actual_name = func.__name__
+            logger.info(f"-> 映射找到: {called_func_name} -> {func.__name__}")
+            
+            # 根据模块名获取对应的模块对象
+            source = _extract_wrapper_source(func)
+            logger.info(f"-> 提取源码: {'成功' if source else '失败'}")
+            
+            if source:
+                # 关键修复：将函数名替换为 LLM 使用的注册表名称
+                # 例如：将 "def safe_enhance_clahe(...)" 替换为 "def CLAHE_Enhancement(...)"
+                source = re.sub(rf'def\s+{actual_name}\s*\(', f'def {called_func_name}(', source)
+                used_functions[called_func_name] = source
+                logger.info(f"-> ✅ 成功添加到 used_functions")
+            else:
+                logger.info(f"-> ❌ 源码提取失败，跳过")
+        else:
+            logger.info(f"-> 不在注册表映射中")
+
 def render_message_content(msg, index: int):
     """提取内部渲染逻辑，供历史记录与最新消息复用"""
+    if msg.get("error"):
+        st.error(msg.get("content", "本轮运行失败"))
+        details = str(msg.get("error_details") or msg.get("error") or "").strip()
+        if details:
+            with st.expander("错误详情"):
+                st.code(details, language="text")
+        if st.button("🚮 删除本轮对话", on_click=delete_message, args=[index], key=f"del_btn_{id(msg)}_{index}"):
+            st.rerun()
+        return
+
     st.markdown(msg["content"])
     if "image" not in msg:
         if st.button("🚮 删除本轮对话", on_click=delete_message, args=[index], key=f"del_btn_{id(msg)}_{index}"):
             st.rerun()
     else:
-        with st.expander("🛠️ 查看此轮生成的代码与最优参数"):
-            with st.expander("评价逻辑 (Evaluation Code)"):
-                st.code(msg.get("eval_code", "# 无评价代码"), language="python")
-            
-            with st.expander("处理逻辑 (Process Code)"):
-                st.code(msg.get("process_code", "# 无处理代码"), language="python")
-            
-            with st.expander("Optuna 最优参数组合"):
-                st.json(msg.get("best_params", {}))
+        meta_items = []
+        if msg.get("image") is not None:
+            try:
+                h, w = msg["image"].shape[:2]
+                meta_items.append(f"图像 {w}x{h}")
+            except Exception:
+                pass
+        if "n_trials_used" in msg:
+            meta_items.append(f"实际调优 {msg.get('n_trials_used')} 轮")
+        if msg.get("new_tool"):
+            tool_schema = msg["new_tool"].get("schema", {}) if isinstance(msg["new_tool"], dict) else {}
+            tool_name = tool_schema.get("name") or "未命名工具"
+            meta_items.append(f"新增工具 {tool_name}")
+        if meta_items:
+            st.caption(" · ".join(meta_items))
+
+        if any(key in msg for key in ['eval_code', 'process_code', 'best_params']):
+            with st.expander("🛠️ 查看此轮生成的代码与最优参数"):
+                with st.expander("评价逻辑 (Evaluation Code)"):
+                    st.code(msg.get("eval_code", "# 无评价代码"), language="python")
+                
+                with st.expander("处理逻辑 (Process Code)"):
+                    st.code(msg.get("process_code", "# 无处理代码"), language="python")
+                
+                with st.expander("Optuna 最优参数组合"):
+                    st.json(msg.get("best_params", {}))
+                if msg.get("new_tool"):
+                    new_tool = msg["new_tool"]
+                    with st.expander("新增工具详情"):
+                        st.write("Schema")
+                        st.json(new_tool.get("schema", {}))
+                        st.write("代码")
+                        st.code(new_tool.get("code", "# 无工具代码"), language="python")
+                        if new_tool.get("additional_imports"):
+                            st.write("附加导入")
+                            st.json(new_tool.get("additional_imports"))
+                        if new_tool.get("additional_packages"):
+                            st.write("附加依赖")
+                            st.json(new_tool.get("additional_packages"))
+        else:
+            st.info(":information_source: 本轮处理没有任何可显示的信息")
 
         with st.container(horizontal=True):
             if st.button("🚮 删除本轮对话", on_click=delete_message, args=[index], key=f"del_btn_{id(msg)}_{index}"):
@@ -141,35 +423,11 @@ def render_message_content(msg, index: int):
                 st.button("📥 保存此版本", disabled=True)
             
             if "new_tool" in msg and msg["new_tool"]:
-                def save_tool(tool: dict):
-                    custom_tool_dir = get_executable_dir() / "tools/custom"
-                    custom_tool_dir.mkdir(parents=True, exist_ok=True)
-
-                    tool_schema = tool['schema']
-                    tool_code = tool['code']
-
-                    tool_name: str = tool_schema['name']
-
-                    (custom_tool_dir / tool_name).with_suffix(".yaml").write_text(
-                        yaml.dump(tool_schema, allow_unicode=True, indent=2), encoding='utf-8'
-                    )
-
-                    imports_text = "import numpy as np\nimport cv2\nimport math\nimport skimage\nimport scipy"
-
-                    (custom_tool_dir / tool_name).with_suffix(".py").write_text(
-                        f"{imports_text}\n\n{tool_code}", encoding='utf-8'
-                    )
-
-                tool_name = msg['new_tool']['schema']['name']
-                file_name = get_executable_dir() / f"tools/custom/{tool_name}"
-
-                if file_name.with_suffix(".yaml").exists() and file_name.with_suffix(".py").exists():
-                    st.button("🆕 保存新工具", disabled=True)
-                    if tool_name not in global_registry.tools:
-                        global_registry.load_custom_tool(tool_name)
-                else:
-                    global_registry.dynamic_unregister(tool_name)
-                    st.button("🆕 保存新工具", on_click=save_tool, args=[msg['new_tool']])
+                render_tool_save_button(
+                    msg["new_tool"],
+                    button_label="🆕 保存新工具",
+                    button_key=f"save_tool_chat_{index}"
+                )
 
             process_code = msg.get("process_code", "")
             best_params = msg.get("best_params", {})
@@ -225,29 +483,7 @@ def render_message_content(msg, index: int):
                 else:
                     logger.info(f"未检测到任何 cv_wrappers/skimage_wrappers 调用")
                 
-                for called_func_name in set(matches):  # 去重
-                    logger.info(f"正在处理函数: {called_func_name}")
-                    
-                    # 尝试通过注册表映射查找实际函数
-                    if called_func_name in global_registry.tools:
-                        func: Callable = global_registry.tools[called_func_name]['func']
-                        actual_name = func.__name__
-                        logger.info(f"-> 映射找到: {called_func_name} -> {func.__name__}")
-                        
-                        # 根据模块名获取对应的模块对象
-                        source = _extract_wrapper_source(func)
-                        logger.info(f"-> 提取源码: {'成功' if source else '失败'}")
-                        
-                        if source:
-                            # 关键修复：将函数名替换为 LLM 使用的注册表名称
-                            # 例如：将 "def safe_enhance_clahe(...)" 替换为 "def CLAHE_Enhancement(...)"
-                            source = re.sub(rf'def\s+{actual_name}\s*\(', f'def {called_func_name}(', source)
-                            used_functions[called_func_name] = source
-                            logger.info(f"-> ✅ 成功添加到 used_functions")
-                        else:
-                            logger.info(f"-> ❌ 源码提取失败，跳过")
-                    else:
-                        logger.info(f"-> 不在注册表映射中")
+                extract_funcs(matches, used_functions)
                 
                 logger.info(f"最终 used_functions 包含的函数: {list(used_functions.keys())}")
                 
@@ -267,9 +503,10 @@ class cv_wrappers:
 # Usage: python image_enhancement_script.py <input_dir> <output_dir>
 
 import cv2
-import numpy as np
 import skimage
-import scipy
+import numpy as np
+import PIL
+from skimage import *
 import os
 import argparse
 import sys
@@ -306,12 +543,16 @@ def batch_process(input_dir, output_dir):
     print(f"找到 {{len(files)}} 张图片，开始处理...")
     for i, filename in enumerate(files):
         img_path = os.path.join(input_dir, filename)
-        image = cv2.imread(img_path)
+        with open(img_path, mode='rb') as f:
+            file_bytes = np.asarray(bytearray(file.read()), dtype=np.uint8)
+        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         if image is not None:
             try:
                 enhanced = process(image, best_params)
                 output_path = os.path.join(output_dir, filename)
-                cv2.imwrite(output_path, enhanced)
+                succ, enc_img = cv2.imencode('.png', enhanced, [cv2.IMWRITE_PNG_COMPRESSION, 2])
+                with open(output_path, mode='wb') as f:
+                    f.write(enc_img.tobytes())
                 print(f"[{{i+1}}/{{len(files)}}] 已处理: {{filename}}")
             except Exception as e:
                 print(f"[{{i+1}}/{{len(files)}}] 处理失败 {{filename}}: {{str(e)}}")
@@ -365,8 +606,8 @@ if __name__ == "__main__":
 
             image_comparison(
                 get_thumbnail_img_wrapper(st.session_state['img_bgr'], 'b64') if comp_target == "原图" else get_thumbnail_img_wrapper(prev_image, 'b64'),
-                get_thumbnail_img_wrapper(st.session_state['best_bgr'], 'b64'),
-                get_thumbnail_size(st.session_state['best_bgr'], st.session_state['preview_img_max_side'])[1],
+                get_thumbnail_img_wrapper(msg["image"], 'b64'),
+                get_thumbnail_size(msg["image"], st.session_state['preview_img_max_side'])[1],
                 comp_target,
                 "最新"
             )

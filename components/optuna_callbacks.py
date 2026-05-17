@@ -5,7 +5,7 @@ import cv2
 from skimage.metrics import structural_similarity as ssim_metric
 
 from streamlit.delta_generator import DeltaGenerator
-from queue import Queue
+from collections import deque
 
 from utils import get_thumbnail_img, get_thumbnail_img_nocache
 
@@ -99,7 +99,7 @@ class StOptunaCallbackImg:
         status_text: DeltaGenerator, 
         table_placeholder: DeltaGenerator,
         image: DeltaGenerator,
-        best_queue: Queue[np.ndarray],
+        best_queue: deque[np.ndarray],
         previous_best_bgr: np.ndarray = None,
         compare_to_raw: bool = True,
         max_side: int = 800,
@@ -183,8 +183,8 @@ class StOptunaCallbackImg:
 
         # 更新最佳图像（如果有）
         best_img_bgr = None
-        while not self.best_queue.empty():
-            best_img_bgr = self.best_queue.get()
+        while not self.best_queue:
+            best_img_bgr = self.best_queue.popleft()
         if best_img_bgr is not None:
             # 如果有上一轮的图片，则使用增强的对比组件
             if self.previous_best_bgr is not None:

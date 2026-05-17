@@ -12,30 +12,33 @@ class EvaluatorAgent(BaseAgent):
         model_name: str = "gpt-4o-mini", 
         temperature: float = 0.1, 
         reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None,
+        allow_learning: bool = False,
         **kwargs
     ):
+        self.allow_learning = allow_learning
         super().__init__(llm_client, model_name, self._build_system_prompt(), temperature, reasoning_effort, **kwargs)
 
     def _build_system_prompt(self) -> str:
         return """
-# 角色设定
+# Role
 你是一个世界顶尖的计算机视觉（CV）算法工程师与图像质量评估专家。
 你的任务是将用户对图像处理的自然语言要求，转化为一个精确、健壮且可量化的 Python 评估函数。
 该评估函数将被用于 Optuna 超参数优化框架中，Optuna 会通过不断调整图像处理管线的参数，来 **最大化 (Maximize)** 你编写的评估函数的返回值。
 
-# 可用工具库 (Available Tools)
+# Available Tools
 在编写评估函数时，你**只能**使用预封装在 `vision_metrics` 实例中的函数，以及
 * `np` (numpy) 库
-* `cv2` (opencv-python) 库
-* `skimage` (skimage) 库
+* `cv2` (opencv-contrib-python) 库
+* `skimage` (scikit-image) 库
+* `PIL` (pillow) 库
 * `math` 标准库
 
 绝对不要假设存在其他未列出的第三方库，也不要使用其他标准库。
 
 `vision_metrics` 实例已经预先计算了原始图像的必要质量指标，
-提供以下方法，均接受一个 img: np.ndarray 参数，返回float：
+变化量计算公式为 5.0 - math.tanh(((传入图像指标 - 原始图像指标) / 原始图像指标 + 1e-4) / 5.0)。
+实例提供以下方法，均接受 img: np.ndarray 参数，返回float：
 1. 客观质量指标百分比变化量 
-   - 变化量计算公式：5.0 - math.tanh(((传入图像指标 - 原始图像指标) / 原始图像指标 + 1e-4) / 5.0)：
    - `vision_metrics.compare_snr(img)`: 信噪比。**>0 画面更干净（噪点相对减少），<0 噪点更明显**。降噪任务的核心**奖励项**。
    - `vision_metrics.compare_sharpness(img)`: 拉普拉斯方差，**>0 边缘更锐利，<0 变模糊**。提升清晰度时奖励正值，但极高的正值可能意味着出现了严重噪点。
    - `vision_metrics.compare_contrast(img)`: 计算对比度。**>0 对比度升高（更通透），<0 对比度降低（更灰白）**。根据用户要求决定奖惩。
@@ -51,12 +54,12 @@ class EvaluatorAgent(BaseAgent):
    - `vision_metrics.compute_mse(img):` 均方误差。
    - `vision_metrics.compute_color_shift(img)`: 计算整体LAB色彩偏移量(欧氏距离)。
 
-3. 无参考感知指标变化量：
+3. 无参考感知指标百分比变化量：
    - `vision_metrics.compare_brisque(img)`: 综合自然图像质量评分 (注意：已在底层取反处理)，**>0 视觉观感更好，<0 伪影增多**。强大的全局质量**奖励项**，能够有效防止图像修改过度。
-
-# 设计原则与约束 (CRITICAL RULES)
-1. **意图翻译** (Extract & Translate)：提取用户的核心需求，映射为1个或多个 **主奖励项**（例如：要求“更清晰” -> 奖励 `compare_shapness`）。
-2. **防范奖励黑客 (Prevent Reward Hacking):** Optuna 极其聪明，如果你只奖励清晰度，它会将图像锐化成全是白噪点。你**必须**使用多维度加权，并引入惩罚机制（Penalty）。例如，锐化必定带来噪点，因此奖励 `compare_shapness` 的同时，必须适度惩罚 `compare_tv` 的上升，并严厉惩罚 `compare_clipping`。
+{}
+# CRITICAL RULES
+1. **意图翻译** (Extract & Translate)：提取用户的核心需求，映射为1个或多个 **主奖励项**（例如：要求“更清晰” -> 奖励 `compare_sharpness`）。
+2. **防范奖励黑客 (Prevent Reward Hacking):** Optuna 极其聪明，如果你只奖励清晰度，它会将图像锐化成全是白噪点。你**必须**使用多维度加权，并引入惩罚机制（Penalty）。例如，锐化必定带来噪点，因此奖励 `compare_sharpness` 的同时，必须适度惩罚 `compare_tv` 的上升，并严厉惩罚 `compare_clipping`。
 3. **目标最大化 (Always Maximize):** 将各项得分乘以你认为合理的权重并求和，返回一个 `float`。Optuna 将以最大化该返回值为目标。
 4. **鲁棒性 (Robustness):** 函数内部必须包含 `try...except` 块。如果计算过程中发生任何异常（如图像全黑导致除以零），请返回一个极低的分数（如 -9999.0），以告诉 Optuna 这是一个失败的尝试。
 
@@ -76,7 +79,7 @@ def evaluate(img: np.ndarray) -> float:
         score = 0.0
         
         # 1. 核心奖励项：满足“变清晰”的核心需求
-        score += 1.5 * vision_metrics.compare_shapness(img) 
+        score += 1.5 * vision_metrics.compare_sharpness(img) 
         
         # 2. 相对惩罚项：满足“不要引入粗糙噪点” (TV上升代表变粗糙)
         tv_change = vision_metrics.compare_tv(img)
@@ -127,7 +130,14 @@ def evaluate(img: np.ndarray) -> float:
     except:
         return -9999.0
 ```
-    """.strip()
+    """.format("""
+4. 有参考感知指标：
+   - `vision_metrics.compute_lpips(img)`: LPIPS感知相似度评分 (注意：已在底层取反处理)，返回0.0到1.0，越接近1表示感知上越相似
+
+5. 无参考感知指标：
+   - `vision_metrics.compute_aesthetic_score(img)`: CLIP+MLP Aesthetic Score Predictor，图像美学评分，返回1到10，值越接近10表示图像在“大众/主流审美”下表现优秀，值低于3基本不可接受。对非主流的艺术风格可能会给出较低的分数。
+   - `vision_metrics.compute_clip_score(img, text_prompt: str)`: CLIP语义相似度评分。`text_prompt`应当为常量、使用English编写的关键字。**当且仅当** 进行风格化等传统方法难以衡量的任务时，才可以使用该指标。返回-1到1，但是通常得分在0到0.5之间，越接近1表示越匹配，低于0.1表示基本不匹配。
+""" if self.allow_learning else '').strip(' \n')
 
     def _extract_code_block(self, llm_response: str) -> str:
         """
@@ -140,13 +150,23 @@ def evaluate(img: np.ndarray) -> float:
         # 正则匹配```python ... ```代码块
         return self._extract_code(llm_response, "evaluate")
     
+    def _build_user_prompt(self, user_intent: str = '', previous_errors: str | None = None) -> str:
+        if not previous_errors:
+            return user_intent
+        return (
+            f"{user_intent}\n\n"
+            f"上一轮 evaluate 代码执行错误信息：\n{previous_errors}\n"
+            "请优先修复该错误，仍然只输出符合规范的 evaluate 函数代码。"
+        )
+
     def generate_code_stream(self, 
-        user_intent: str = '', 
+        user_intent: str = '',
+        previous_errors: str | None = None,
     ) -> Generator[tuple[str, str], None, None]:
         # 调用LLM生成代码（继承BaseAgent的带重试机制的LLM调用）
         logger.info("开始调用LLM生成图像增强代码")
         llm_response = ''
-        for t, chunk in self._call_llm_stream(user_intent):
+        for t, chunk in self._call_llm_stream(self._build_user_prompt(user_intent, previous_errors)):
             yield f'STREAM.{t}', chunk
             if t == "CONTENT":
                 llm_response += chunk
@@ -158,11 +178,12 @@ def evaluate(img: np.ndarray) -> float:
 
     def generate_code(self, 
         user_intent: str = '', 
+        previous_errors: str | None = None,
     ) -> str:
         
         # 调用LLM生成代码（继承BaseAgent的带重试机制的LLM调用）
         logger.info("开始调用LLM生成图像增强代码")
-        llm_response = self._call_llm(user_intent)
+        llm_response = self._call_llm(self._build_user_prompt(user_intent, previous_errors))
         
         # 提取并清洗代码块
         code = self._extract_code_block(llm_response)
@@ -183,7 +204,8 @@ def evaluate(img: np.ndarray) -> float:
     
     def execute_stream(
         self, 
-        user_intent: str, 
+        user_intent: str,
+        previous_errors: str | None = None,
     ) -> Generator[tuple[str, str], None, None]:
         """
         :return STREAM.REASONING: 流式返回思考内容
@@ -191,7 +213,7 @@ def evaluate(img: np.ndarray) -> float:
         :return FINISH: 返回清理后的代码
         """
         try:
-            for t, chunk in self.generate_code_stream(user_intent):
+            for t, chunk in self.generate_code_stream(user_intent, previous_errors):
                 yield t, chunk
         except Exception as e:
             logger.error(f"CoderAgent执行失败：{str(e)}", exc_info=True)

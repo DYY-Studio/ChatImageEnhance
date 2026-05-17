@@ -3,16 +3,33 @@ import json
 import yaml
 import numpy as np
 import math
+import torch
 
+from PIL import Image
 from skimage.metrics import structural_similarity as ssim
-from typing import Callable
+from typing import Callable, Any
+
+from models.AestheticScorePredictor import AestheticMLP
+from utils import get_executable_dir, get_available_devices
 
 class Evaluator:
     """
     基于弱参考的图像质量评估器。
     """
-    def __init__(self, original_img: np.ndarray):
+    def __init__(self, 
+        original_img: np.ndarray, 
+        model_cache: dict[str, Any] | None = None, 
+        device: str | None = None
+    ):
         self.original_img = original_img
+
+        self.model_cache = model_cache if model_cache is not None else {}
+
+        if device is None or not device:
+            self.device = get_available_devices()[0]
+        else:
+            self.device = device
+
         # 预先将原图转为灰度图，节省后续计算 SSIM 的开销
         self.gray_original = self._to_gray(original_img)
         
@@ -26,6 +43,8 @@ class Evaluator:
         self.base_snr = self.compute_snr(self.gray_original)
         self.base_hf_ratio = self.compute_high_freq_ratio(self.gray_original)
         self.base_contrast = self.compute_contrast(self.gray_original)
+
+        self.base_lpips_tensor = self._bgr_to_tensor_lpips(self.original_img)
         
         self.brisque_obj = cv2.quality.QualityBRISQUE.create(
             "brisque_model_live.yml", 
@@ -43,6 +62,21 @@ class Evaluator:
             # 假设输入为 BGR 格式
             return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         return img
+    
+    # =========================
+    #     深度学习辅助转换
+    # =========================
+    
+    def _bgr_to_pil(self, img: np.ndarray) -> Image.Image:
+        """将 OpenCV 的 BGR 格式安全转换为 PIL RGB 格式"""
+        return Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+
+    def _bgr_to_tensor_lpips(self, img: np.ndarray) -> torch.Tensor:
+        """将 BGR 格式转换为 LPIPS 需要的范围 [-1, 1] 的 RGB Tensor"""
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        tensor = torch.from_numpy(rgb).float() / 255.0
+        tensor = tensor * 2.0 - 1.0
+        return tensor.permute(2, 0, 1).unsqueeze(0).to(self.device)
 
     def _align_images(self, img1: np.ndarray, img2: np.ndarray) -> np.ndarray:
         """防御性编程：确保评估时图像尺寸一致，防止 Agent 改变了输出尺寸导致报错。"""
@@ -175,20 +209,6 @@ class Evaluator:
     def compare_contrast(self, img: np.ndarray) -> float:
         return self._compute_diff(self.compute_contrast, img, self.base_contrast)
 
-    # def compute_color_cast(self, img: np.ndarray) -> dict:
-    #     """
-    #     色偏检测 (Color Cast)。
-    #     返回 R, G, B 三通道的平均值。Agent 可据此判断是否需要白平衡。
-    #     """
-    #     if len(img.shape) != 3:
-    #         return {"b": 0.0, "g": 0.0, "r": 0.0}
-    #     b, g, r = cv2.split(img)
-    #     return {
-    #         "b": round(float(np.mean(b)), 2),
-    #         "g": round(float(np.mean(g)), 2),
-    #         "r": round(float(np.mean(r)), 2)
-    #     }
-
     def compute_snr(self, img: np.ndarray) -> float:
         """
         盲信噪比估算 (Blind SNR Estimation)。
@@ -279,6 +299,155 @@ class Evaluator:
         # 计算 L, A, B 三通道的欧氏距离
         diff = np.sqrt(np.sum((lab_orig - lab_new) ** 2, axis=-1))
         return float(np.mean(diff))
+    
+    # =========================
+    #     深度感知与语义指标
+    # =========================
+
+    def _load_lpips(self, net: str = 'alex'):
+        import lpips
+        cache_key = f"lpips_{net}_{self.device}"
+        # 懒加载：仅在第一次调用此网络时实例化
+        if cache_key not in self.model_cache:
+            unloads = []
+            for key in self.model_cache:
+                if key.startswith('lpips_'):
+                    unloads.append(key)
+            for key in unloads:
+                del self.model_cache[key]
+
+            self.model_cache[cache_key] = lpips.LPIPS(net=net).to(self.device).eval()
+
+        return self.model_cache[cache_key]
+
+    def compute_lpips(self, img: np.ndarray, net: str = 'alex') -> float:
+        """
+        计算 LPIPS 感知相似度。值越低代表感知上越相似。
+        """
+        # 计算并返回分数
+        img1 = self._align_images(self.original_img, img)
+        img1 = self._bgr_to_tensor_lpips(img1)
+        
+        with torch.no_grad():
+            score = self._load_lpips(net)(self.base_lpips_tensor, img1).item()
+        return 1.0 - np.clip(float(score), 0.0, 1.0)
+    
+    def _load_clip(self, 
+        cache_prefix: str = 'clip', 
+        model_name: str = 'ViT-B-32', 
+        pretrained: str = 'laion2b_s34b_b79k',
+        tokenizer: bool = True,
+    ):
+        import open_clip
+        cache_key = f"{cache_prefix}_{model_name}_{pretrained}_{self.device}"
+        
+        # 懒加载：将 model, preprocess 和 tokenizer 打包缓存
+        if cache_key not in self.model_cache:
+            model, _, preprocess = open_clip.create_model_and_transforms(
+                model_name, pretrained=pretrained, device=self.device,
+                cache_dir=str(get_executable_dir() / 'caches/model_assets/huggingface')
+            )
+            tokenizer = open_clip.get_tokenizer(model_name) if tokenizer else None
+
+            # 卸载之前的缓存
+            unloads = []
+            for key in self.model_cache:
+                if key.startswith(f'{cache_prefix}_'):
+                    unloads.append(key)
+            for key in unloads:
+                del self.model_cache[key]
+
+            self.model_cache[cache_key] = {
+                "model": model.eval(),
+                "preprocess": preprocess,
+                "tokenizer": tokenizer
+            }
+
+        return self.model_cache[cache_key]
+
+    def compute_clip_score(self, 
+        img: np.ndarray, 
+        text_prompt: str, 
+        model_name: str = 'ViT-L-14', 
+        pretrained: str = 'openai'
+    ) -> float:
+        """
+        计算图像与文本提示的 CLIP 余弦相似度。值越高代表越符合文本描述。
+        支持动态切换 CLIP 模型。
+        """
+        clip_bundle = self._load_clip('clip', model_name, pretrained)
+        model = clip_bundle["model"]
+        preprocess = clip_bundle["preprocess"]
+        tokenizer = clip_bundle["tokenizer"]
+
+        pil_img = self._bgr_to_pil(img)
+        image_input = preprocess(pil_img).unsqueeze(0).to(self.device)
+        text_input = tokenizer([text_prompt]).to(self.device)
+
+        with torch.no_grad():
+            image_features = model.encode_image(image_input)
+            text_features = model.encode_text(text_input)
+            
+            # 归一化后算余弦相似度
+            image_features /= image_features.norm(dim=-1, keepdim=True)
+            text_features /= text_features.norm(dim=-1, keepdim=True)
+            similarity = (image_features @ text_features.T).item()
+            
+        return float(similarity)
+
+    def compute_aesthetic_score(self, 
+        img: np.ndarray, 
+        weight_path: str = "sac+logos+ava1-l14-linearMSE.pth", 
+        model_name: str = 'ViT-L-14', 
+        pretrained: str = 'openai'
+    ) -> float:
+        """
+        计算图像的无参考美学评分 (通常在 1-10 之间)。越高越好。
+        注：官方权重库通常基于 ViT-L-14 提取特征，请确保 weight_path 路径正确。
+        """
+        # 美学打分器需要前置的 CLIP 模型来提取特征
+
+        clip_bundle = self._load_clip('aesthetic_clip', model_name, pretrained)
+        model, preprocess = clip_bundle["model"], clip_bundle["preprocess"]
+
+        aes_key = f"aesthetic_mlp_{model_name}"
+        if aes_key not in self.model_cache:
+            embed_dim = model.visual.output_dim
+            mlp = AestheticMLP(embed_dim).to(self.device)
+            try:
+                # 需提前下载官方权重包到本地路径
+                mlp.load_state_dict(torch.load(
+                    str(get_executable_dir() / "models" / weight_path), 
+                    map_location=self.device
+                ))
+            except FileNotFoundError:
+                print(f"[警告] 美学模型权重 {weight_path} 未找到，返回 0.0")
+                return 0.0
+            self.model_cache[aes_key] = mlp.eval()
+        
+        mlp = self.model_cache[aes_key]
+
+        pil_img = self._bgr_to_pil(img)
+        image_input = preprocess(pil_img).unsqueeze(0).to(self.device)
+
+        with torch.no_grad():
+            image_features = model.encode_image(image_input)
+            image_features /= image_features.norm(dim=-1, keepdim=True)
+            score = mlp(image_features).item()
+            
+        return float(score)
+    
+    def preload_models(self,
+        model_name: str = 'ViT-L-14',  # ViT-B-32
+        pretrained: str = 'openai', # laion2b_s34b_b79k
+        l14_pretrained: str = 'openai',
+    ):
+        loaded = self._load_clip('clip', model_name, pretrained)
+        if model_name == 'ViT-L-14' and pretrained == l14_pretrained:
+            self.model_cache[f"aesthetic_clip_{model_name}_{pretrained}"] = loaded
+        else:
+            self._load_clip('aesthetic_clip', 'ViT-L-14', l14_pretrained)
+        self._load_lpips()
     
     def _generate_profile(self) -> dict:
         """
