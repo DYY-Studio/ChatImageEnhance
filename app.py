@@ -22,7 +22,7 @@ from collections import deque
 from streamlit_local_storage import LocalStorage
 
 from components.optuna_callbacks import StOptunaCallbackImg
-from components.tool_search import StSearch
+from components.tool_search import StEnrichFindings, StSearch
 from components.llm_response_handler import StStreamResHandler
 from components.image_analyze import image_analyze
 from components.tools_playground import render_playground
@@ -736,7 +736,7 @@ if user_feedback:
                                         searcher, tool_request, search_container, search_steps_limit, search_interval
                                     )
                                     if isinstance(search_result, dict):
-                                        search_result = searcher.enrich_findings(search_result, auto_download=True)
+                                        search_result = StEnrichFindings(searcher, search_result, search_container)
                                         if search_result.get("download_error"):
                                             st.warning(f"模型资产下载失败：{search_result['download_error']}")
                         break

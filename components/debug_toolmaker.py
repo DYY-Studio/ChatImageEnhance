@@ -4,7 +4,7 @@ from core.searcher import Searcher
 from core.orchestrator import Orchestrator
 from utils import get_openai_client
 
-from components.tool_search import StSearch, StStreamResHandler
+from components.tool_search import StEnrichFindings, StSearch, StStreamResHandler
 from components import render_tool_save_button
 
 def render_toolmaker(orch: Orchestrator):
@@ -45,7 +45,7 @@ def render_toolmaker(orch: Orchestrator):
                     st.session_state.search_interval
                 )
                 if isinstance(search_result, dict):
-                    search_result = searcher.enrich_findings(search_result, auto_download=True)
+                    search_result = StEnrichFindings(searcher, search_result, search_container)
                     if search_result.get("download_error"):
                         st.warning(f"模型资产下载失败：{search_result['download_error']}")
 

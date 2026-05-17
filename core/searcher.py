@@ -1,7 +1,7 @@
 from agents.searcher import SearcherAgent
 
 from github import Auth, Github
-from typing import Generator, Literal, Iterable
+from typing import Callable, Generator, Literal, Iterable
 
 import time
 import logging
@@ -277,15 +277,50 @@ class Searcher:
         safe_repo = re.sub(r"[^A-Za-z0-9_.-]+", "__", repo_id.strip())
         return get_executable_dir() / "caches" / "model_assets" / source / safe_repo
 
-    def _download_url_asset(self, asset: dict[str, str], cache_dir: Path) -> str:
+    @staticmethod
+    def _emit_download_progress(
+        progress_callback: Callable[[dict], None] | None,
+        event: dict
+    ) -> None:
+        if progress_callback:
+            progress_callback(event)
+
+    def _download_url_asset(
+        self,
+        asset: dict[str, str],
+        cache_dir: Path,
+        progress_callback: Callable[[dict], None] | None = None,
+        index: int = 1,
+        total: int = 1
+    ) -> str:
         url = asset["url"]
         filename = self._safe_asset_filename(asset.get("filename") or "")
         local_path = cache_dir / filename
         local_path.parent.mkdir(parents=True, exist_ok=True)
         if local_path.exists() and local_path.stat().st_size > 0:
+            self._emit_download_progress(progress_callback, {
+                "event": "asset_skip",
+                "filename": filename,
+                "url": url,
+                "index": index,
+                "total": total,
+                "downloaded_bytes": local_path.stat().st_size,
+                "total_bytes": local_path.stat().st_size,
+                "path": str(local_path.resolve()),
+            })
             return str(local_path.resolve())
 
         temp_path = local_path.with_suffix(local_path.suffix + ".part")
+        self._emit_download_progress(progress_callback, {
+            "event": "asset_start",
+            "filename": filename,
+            "url": url,
+            "index": index,
+            "total": total,
+            "downloaded_bytes": 0,
+            "total_bytes": None,
+            "path": str(local_path.resolve()),
+        })
         try:
             with httpx.stream(
                 "GET",
@@ -296,11 +331,51 @@ class Searcher:
                 verify=os.environ.get('REQUESTS_CA_BUNDLE', True)
             ) as response:
                 response.raise_for_status()
+                total_bytes = None
+                content_length = response.headers.get("content-length")
+                if content_length:
+                    try:
+                        total_bytes = int(content_length)
+                    except ValueError:
+                        total_bytes = None
+
+                downloaded_bytes = 0
+                self._emit_download_progress(progress_callback, {
+                    "event": "asset_progress",
+                    "filename": filename,
+                    "url": url,
+                    "index": index,
+                    "total": total,
+                    "downloaded_bytes": downloaded_bytes,
+                    "total_bytes": total_bytes,
+                    "path": str(local_path.resolve()),
+                })
                 with open(temp_path, mode="wb") as f:
                     for chunk in response.iter_bytes(chunk_size=1024 * 1024):
                         if chunk:
                             f.write(chunk)
+                            downloaded_bytes += len(chunk)
+                            self._emit_download_progress(progress_callback, {
+                                "event": "asset_progress",
+                                "filename": filename,
+                                "url": url,
+                                "index": index,
+                                "total": total,
+                                "downloaded_bytes": downloaded_bytes,
+                                "total_bytes": total_bytes,
+                                "path": str(local_path.resolve()),
+                            })
             temp_path.replace(local_path)
+            self._emit_download_progress(progress_callback, {
+                "event": "asset_done",
+                "filename": filename,
+                "url": url,
+                "index": index,
+                "total": total,
+                "downloaded_bytes": local_path.stat().st_size,
+                "total_bytes": local_path.stat().st_size,
+                "path": str(local_path.resolve()),
+            })
         finally:
             if temp_path.exists():
                 try:
@@ -313,11 +388,22 @@ class Searcher:
         self,
         source: str,
         repo_id: str,
-        asset_urls: list[dict[str, str]]
+        asset_urls: list[dict[str, str]],
+        progress_callback: Callable[[dict], None] | None = None
     ) -> tuple[list[str], str]:
         cache_dir = self._get_repo_cache_dir(source, repo_id)
         cache_dir.mkdir(parents=True, exist_ok=True)
-        downloaded = [self._download_url_asset(asset, cache_dir) for asset in asset_urls]
+        total = len(asset_urls)
+        downloaded = [
+            self._download_url_asset(
+                asset,
+                cache_dir,
+                progress_callback=progress_callback,
+                index=index,
+                total=total
+            )
+            for index, asset in enumerate(asset_urls, start=1)
+        ]
         return downloaded, str(cache_dir.resolve())
 
     def _download_github_file(self, repo, rel_path: str, cache_dir: Path) -> str:
@@ -429,7 +515,12 @@ class Searcher:
         downloaded_files.append(str(Path(snapshot_dir).resolve()))
         return downloaded_files, str(cache_dir.resolve())
 
-    def enrich_findings(self, findings: dict | None, auto_download: bool = True) -> dict:
+    def enrich_findings(
+        self,
+        findings: dict | None,
+        auto_download: bool = True,
+        progress_callback: Callable[[dict], None] | None = None
+    ) -> dict:
         """
         规范化 SearcherAgent 的 submit_findings 结果，并可选自动下载模型资产。
         """
@@ -476,7 +567,12 @@ class Searcher:
             else:
                 files, folder = self._download_modelscope_assets(repo_id, require_files)
             if asset_urls:
-                asset_files, folder = self._download_url_assets(source, repo_id, asset_urls)
+                asset_files, folder = self._download_url_assets(
+                    source,
+                    repo_id,
+                    asset_urls,
+                    progress_callback=progress_callback
+                )
                 files.extend(asset_files)
             enriched["downloaded_files"] = files
             enriched["download_dir"] = folder
