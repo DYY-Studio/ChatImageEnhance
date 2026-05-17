@@ -18,6 +18,7 @@ from sandbox.code_checker import (
     DEFAULT_ALLOWED_IMPORT_PREFIXES,
     SecurityViolation,
     is_allowed_import_path,
+    validate_model_loaders_local_files_only,
 )
 from sandbox.runtime_dependencies import RuntimeDependencyManager
 from types import ModuleType, SimpleNamespace
@@ -513,6 +514,7 @@ class SandboxExecutor:
                     raise ValueError(f"Learning tool must accept runtime argument: {name}")
                 if name not in schema_params:
                     raise ValueError(f"Learning tool schema.parameters must include: {name}")
+            validate_model_loaders_local_files_only(code_str)
 
         if "model_dir" in schema_params and not global_registry._accepts_keyword(sig, "model_dir"):
             raise ValueError("Tool schema exposes model_dir but function does not accept it")
