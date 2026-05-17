@@ -210,7 +210,8 @@ class WebSearchTool:
                 bing_url,
                 headers={"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                          "Accept-Language": "en-US,en;q=0.9"},
-                timeout=self.timeout
+                timeout=self.timeout,
+                follow_redirects=True
             )
             resp.raise_for_status()
             return self._parse_bing_results(resp.text, max_results)
