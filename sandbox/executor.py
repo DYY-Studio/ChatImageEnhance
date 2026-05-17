@@ -483,9 +483,14 @@ class SandboxExecutor:
                 test_img = np.random.randint(0, 256, (48, 64), dtype=np.uint8)
 
                 sig = inspect.signature(tool_func)
-                sig.bind(test_img)
+                test_kwargs = global_registry.build_runtime_kwargs(
+                    tool_func,
+                    schema,
+                    {"cache": {}, "device": "cpu"}
+                )
+                sig.bind(test_img, **test_kwargs)
 
-                result = tool_func(test_img)
+                result = tool_func(test_img, **test_kwargs)
                 if not isinstance(result, np.ndarray):
                     raise ValueError("Tool retval is not np.ndarray")
 
@@ -497,7 +502,7 @@ class SandboxExecutor:
 
                 start_time = time.perf_counter_ns()
                 for _ in range(5):
-                    tool_func(test_img)
+                    tool_func(test_img, **test_kwargs)
                 end_time = time.perf_counter_ns()
                 target_cost = end_time - start_time
 

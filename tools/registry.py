@@ -5,7 +5,9 @@ import importlib.util
 import sys
 import logging
 import re
+import functools
 
+from pathlib import Path
 from typing import Callable, Literal
 from utils import get_executable_dir
 
@@ -24,6 +26,112 @@ class ToolRegistry:
     @property
     def last_custom_tool_errors(self):
         return self._last_custom_tool_errors.copy()
+
+    @staticmethod
+    def _safe_repo_cache_name(repo_id: str) -> str:
+        return re.sub(r"[^A-Za-z0-9_.-]+", "__", str(repo_id or "").strip())
+
+    @classmethod
+    def resolve_model_dir(cls, schema: dict | None) -> str:
+        """
+        Resolve the local model directory for a tool schema.
+
+        Dynamic deep-learning tools may come from Hugging Face, ModelScope, or
+        GitHub. Their cache roots differ, so callers should not hardcode a
+        generic caches/model_assets path.
+        """
+        if not isinstance(schema, dict):
+            return ""
+
+        source = str(schema.get("model_source") or schema.get("source") or "").strip().lower()
+        repo_id = str(schema.get("model_repo_id") or schema.get("repo_id") or "").strip()
+        if source in {"github", "huggingface", "modelscope"}:
+            base = get_executable_dir() / "caches" / "model_assets" / source
+            if repo_id:
+                return str((base / cls._safe_repo_cache_name(repo_id)).resolve())
+            return str(base.resolve())
+
+        # Backward-compatible fallback for older local tools. New schemas should
+        # store source/repo_id instead of absolute paths so app relocation works.
+        for key in ("model_dir", "download_dir", "model_download_dir", "model_asset_dir"):
+            value = schema.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            path = get_executable_dir() / value.strip()
+            return str(path.resolve()) if not Path(value.strip()).is_absolute() else value.strip()
+
+        return ""
+
+    @staticmethod
+    def _accepts_keyword(sig: inspect.Signature, name: str) -> bool:
+        if name in sig.parameters:
+            return sig.parameters[name].kind != inspect.Parameter.POSITIONAL_ONLY
+        return any(
+            param.kind == inspect.Parameter.VAR_KEYWORD
+            for param in sig.parameters.values()
+        )
+
+    @classmethod
+    def build_runtime_kwargs(
+        cls,
+        func: Callable,
+        schema: dict | None,
+        kwargs: dict | None = None,
+        filter_unknown: bool = True
+    ) -> dict:
+        """
+        Return a copy of kwargs with runtime-owned defaults injected.
+
+        Currently this injects model_dir from schema metadata. Caller supplied
+        non-empty model_dir always wins.
+        """
+        final_kwargs = dict(kwargs or {})
+        try:
+            sig = inspect.signature(func)
+        except (TypeError, ValueError):
+            return final_kwargs
+
+        if cls._accepts_keyword(sig, "model_dir"):
+            current = final_kwargs.get("model_dir")
+            if current is None or (isinstance(current, str) and not current.strip()):
+                model_dir = cls.resolve_model_dir(schema)
+                if model_dir:
+                    final_kwargs["model_dir"] = model_dir
+
+        if not filter_unknown:
+            return final_kwargs
+
+        return {
+            key: value
+            for key, value in final_kwargs.items()
+            if cls._accepts_keyword(sig, key)
+        }
+
+    @classmethod
+    def _wrap_tool_func(cls, func: Callable, schema: dict) -> Callable:
+        @functools.wraps(func)
+        def wrapped(img: np.ndarray, *args, **kwargs):
+            try:
+                bound = inspect.signature(func).bind_partial(img, *args, **kwargs)
+                has_model_dir = "model_dir" in bound.arguments
+                model_dir_value = bound.arguments.get("model_dir")
+                model_dir_blank = (
+                    model_dir_value is None
+                    or (isinstance(model_dir_value, str) and not model_dir_value.strip())
+                )
+            except TypeError:
+                has_model_dir = "model_dir" in kwargs
+                model_dir_value = kwargs.get("model_dir")
+                model_dir_blank = (
+                    model_dir_value is None
+                    or (isinstance(model_dir_value, str) and not model_dir_value.strip())
+                )
+
+            if (not has_model_dir) or ("model_dir" in kwargs and model_dir_blank):
+                kwargs = cls.build_runtime_kwargs(func, schema, kwargs, filter_unknown=False)
+            return func(img, *args, **kwargs)
+
+        return wrapped
 
     @staticmethod
     def _normalize_schema_filter_mode(
@@ -162,17 +270,20 @@ class ToolRegistry:
         
         # 解析参数类型，自动构建 JSON Schema
         parameters_schema = {}
-        for name, param in sig.parameters.items():
-            if name not in ['img']: # 排除默认参数
-                parameters_schema[name] = {"type": str(param.annotation)}
-                
-        self._tools[name if name else func.__name__] = {
-            "func": func,
-            "schema": {
-                "name": name if name else func.__name__,
-                "description": doc,
-                "parameters": parameters_schema,
-            }
+        for param_name, param in sig.parameters.items():
+            if param_name not in ['img']: # 排除默认参数
+                parameters_schema[param_name] = {"type": str(param.annotation)}
+
+        tool_name = name if name else func.__name__
+        schema = {
+            "name": tool_name,
+            "description": doc,
+            "parameters": parameters_schema,
+        }
+        self._tools[tool_name] = {
+            "func": self._wrap_tool_func(func, schema),
+            "raw_func": func,
+            "schema": schema
         }
 
     def dynamic_register(self, func: Callable, schema: dict, performance: str = 'unknown'):
@@ -185,7 +296,8 @@ class ToolRegistry:
             schema['cost'] = performance
         
         self._tools[func_name] = {
-            "func": func,
+            "func": self._wrap_tool_func(func, schema),
+            "raw_func": func,
             "schema": schema,
             "is_dynamic": True # 标记为动态生成的工具
         }
@@ -226,15 +338,17 @@ class ToolRegistry:
             ```
         :param performance: 描述函数的运行速度
         """
+        schema = {    # 供大模型阅读的说明书
+            "name": name,
+            "description": description,
+            "parameters": params_schema,
+            "cost": performance,
+            "requires_learning": requires_learning
+        }
         self._tools[name] = {
-            "func": func,  # 供本地 Python 真正执行的函数指针
-            "schema": {    # 供大模型阅读的说明书
-                "name": name,
-                "description": description,
-                "parameters": params_schema,
-                "cost": performance,
-                "requires_learning": requires_learning
-            },
+            "func": self._wrap_tool_func(func, schema),  # 供本地 Python 真正执行的函数指针
+            "raw_func": func,
+            "schema": schema,
         }
 
     def _filter_tools_for_llm(

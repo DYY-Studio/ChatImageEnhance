@@ -6,7 +6,7 @@ import torch
 from streamlit.delta_generator import DeltaGenerator
 
 from tools import global_registry
-from utils import get_thumbnail_img_nocache, get_thumbnail_img, get_thumbnail_size, get_available_devices, get_executable_dir
+from utils import get_thumbnail_img_nocache, get_thumbnail_img, get_thumbnail_size, get_available_devices
 from components.image_comparison import image_comparison
 
 def render_playground(container: DeltaGenerator | None = None):
@@ -62,7 +62,7 @@ def render_playground(container: DeltaGenerator | None = None):
                                 params_try[name] = dict()
                                 st.markdown('cache')
                             elif name == 'model_dir':
-                                params_try[name] = str(get_executable_dir() / "caches/model_assets")
+                                params_try[name] = global_registry.resolve_model_dir(schema)
                         else:
                             if 'range' in param:
                                 params_try[name] = st.slider(

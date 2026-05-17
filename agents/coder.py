@@ -194,6 +194,7 @@ class CoderAgent(BaseAgent):
     - 情况 C (多工具可选 & 无可调参数)：如果工具库有多个可以实现目标的算子，并且算子 **均没有** 可调优参数，应当使用 `trial` 暴露一个可用算子列表给 Optuna
         - 例如：`low_light_choice = trial.suggest_categorical("Low_Light_Tool_Choice", ["Zero_DCE_Ext_Enhance", "SCI_Low_Light_Enhance"])`
     - **禁止调优的参数类型**：`cache`、`device`、`model_dir`、字符串路径、模型ID等运行时/环境参数，必须使用常量或直接透传，不得 `trial.suggest_*`
+    - 如果算子暴露了 `model_dir` 参数，它是运行时固定参数，会由系统根据算子 schema 中的 `source` / `repo_id` 元数据自动注入；除非用户明确提供自定义本地路径，否则不要在调用算子时手写 `model_dir`。
 * **库访问**：你只能使用下列库：
     - 基础处理: `np` (numpy), `cv2` (opencv-contrib-python), `optuna`, `skimage` (scikit-image), `PIL` (pillow) 以及提供的算子库 `cv_wrappers`
     - 深度学习:
@@ -202,7 +203,7 @@ class CoderAgent(BaseAgent):
 * **纯净性**：函数内不要导入模块，不要使用 `import`, `__import__` 语句，不要定义全局变量
 * **辅助函数**：允许编写辅助函数简化过程、提高可读性，辅助函数必须嵌套在process函数中
 * **单例模式**: 代码会被多次执行，只需要加载一次的内容必须放置在 `cache` 字典中
-* **本地模型优先**: 若调用深度学习算子且其参数包含 `model_dir`，必须优先透传该本地目录，不要在 `process` 中构造联网下载逻辑
+* **本地模型优先**: 若调用深度学习算子且其参数包含 `model_dir`，运行时会按来源自动注入本地目录；不要在 `process` 中拼接 Hugging Face / ModelScope 缓存路径，也不要构造联网下载逻辑
 * **深度学习开关**: 当前会话{learning_switch_status}深度学习处理。{learning_switch_policy}
 * **算子偏好**: {preference_guidance}
 * **运行时信息读取**: 可从 `cache.get("__runtime__", {{}})` 读取运行时偏好：

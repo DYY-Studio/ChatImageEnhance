@@ -95,6 +95,24 @@ class Orchestrator:
         return f"{stage}失败，已把错误反馈给 LLM 重新生成。\n\n{detail}"
 
     @staticmethod
+    def _schema_with_model_assets(schema: dict, search_result: dict | None) -> dict:
+        if not isinstance(schema, dict):
+            return schema
+        if not isinstance(search_result, dict):
+            return schema
+
+        enriched_schema = dict(schema)
+        source = str(search_result.get("source") or "").strip().lower()
+        if source in {"github", "huggingface", "modelscope"}:
+            enriched_schema["source"] = source
+
+        repo_id = str(search_result.get("repo_id") or "").strip()
+        if repo_id:
+            enriched_schema["repo_id"] = repo_id
+
+        return enriched_schema
+
+    @staticmethod
     def _filter_learning_dependencies(
         imports: Iterable[str] | None,
         packages: Iterable[str] | None
@@ -161,10 +179,13 @@ class Orchestrator:
             if search_result.get("dependencies"):
                 extra_lines.append(f"- 额外依赖: {search_result['dependencies']}")
             if search_result.get("download_dir"):
-                extra_lines.append(f"- 本地下载目录: {search_result['download_dir']}")
-            if isinstance(search_result.get("downloaded_files"), list) and search_result["downloaded_files"]:
                 extra_lines.append(
-                    "- 已下载文件:\n  " + "\n  ".join(str(p) for p in search_result["downloaded_files"])
+                    "- 模型缓存: 已按 source/repo_id 预下载；repo-id 接口可直接使用缓存，"
+                    "本地文件路径加载场景才需要 `model_dir`"
+                )
+            if isinstance(search_result.get("require_files"), list) and search_result["require_files"]:
+                extra_lines.append(
+                    "- 需要的仓库内文件:\n  " + "\n  ".join(str(p) for p in search_result["require_files"])
                 )
             if search_result.get("download_error"):
                 extra_lines.append(f"- 下载失败信息: {search_result['download_error']}")
@@ -212,7 +233,7 @@ class Orchestrator:
                 for t, chunk in self.toolmaker_agent.execute_stream(toolmaker_prompt, previous_errors=error_log):
                     if t == "FINISH":
                         code_str = chunk['code']
-                        schema = chunk['schema']
+                        schema = self._schema_with_model_assets(chunk['schema'], search_result)
                         yield "CODE_TOOL.END", None
                     elif t == "STREAM.CONTENT":
                         yield "CODE_TOOL.STREAM", chunk

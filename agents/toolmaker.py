@@ -66,8 +66,10 @@ class ToolMakerAgent(BaseAgent):
 - 你不能导入任何其他标准库（如 `os`, `sys`, `subprocess` 等）或第三方库。
 - **绝对禁止**使用 `exec`, `eval`, `open`, 以及任何带有文件系统或网络访问性质的代码。
 - $LEARNING_POLICY$
-- 如果检索结果中提供了“本地下载目录/已下载文件”，深度学习模型必须优先从本地目录加载，禁止在推理时隐式联网下载。
-- 当接口支持时（如 `from_pretrained`/部分 `pipeline`），必须显式传入 `local_files_only=True` 并使用本地目录路径。
+- 系统已经设置 `HF_HOME` 和 `MODELSCOPE_CACHE`，repo-id 驱动的加载方式应优先依赖这些缓存根目录。
+- 对 Hugging Face / ModelScope 的标准接口（如 `from_pretrained(repo_id, local_files_only=True)`、`pipeline(..., model=repo_id)`、`Model.from_pretrained(repo_id)`），不要暴露 `model_dir`，应在函数内部使用固定 `repo_id` 常量并启用离线/本地优先参数。
+- 只有当模型加载必须依赖本地文件夹或文件路径时，才暴露 `model_dir: str = ''`，例如：自定义 `torch.load(model_dir + '/xxx.pth')`、ONNX/权重文件、GitHub 资产、或必须以本地目录作为 `from_pretrained(model_dir)` 输入的仓库快照。
+- 禁止在推理时隐式联网下载；不要硬编码 Hugging Face / ModelScope 缓存路径。
 
 ## 2. 算子签名与规范
 * 函数名必须以 `safe_` 开头，例如：`def safe_cyberpunk_filter(...)`
@@ -78,7 +80,7 @@ class ToolMakerAgent(BaseAgent):
   - 仅允许缓存模型实例（如 nn.Module, Pipeline）、分词器（Tokenizer）、处理器（Processor）等关键实例。**严禁** 将任何图像数据、Tensor 张量等中间结果放入 cache。
   - 在将模型存入 cache 前，必须显式地将其 .to(device)，以确保后续调用时设备匹配。
 * 深度学习推理算子必须暴露 `device: str = 'cpu'` 和其他关键参数（如`tile_size`）为入参，并赋予合理的默认值。`device`必须要有确认和回落到`cpu`的逻辑。
-* 若使用外部模型文件，必须暴露 `model_dir: str = ''` 入参，并优先使用调用方提供的本地目录。
+* 仅当加载逻辑必须使用本地文件夹/文件路径时，才暴露 `model_dir: str = ''` 入参，并优先使用调用方提供的本地目录；repo-id 驱动的 `from_pretrained` / `pipeline` 不需要暴露 `model_dir`。
 * 若算子含高显存参数（例如 `tile_size`、`patch_size`、`batch_size`、`chunk_size`），必须显式暴露这些参数，不得隐藏在函数体中。
 * 可使用 `runtime = cache.get("__runtime__", {})` 读取运行时偏好（`preferred_device`、`performance_profile`、`device_info`），并据此设置默认策略。
 * 必须实现 OOM 自动回落：捕获显存不足异常后，自动降低高显存参数并在 `cache` 中记录可用参数（例如 `cache['<tool>_fallback']`），后续调用优先复用。
@@ -123,11 +125,12 @@ class ToolMakerAgent(BaseAgent):
         "type": "dict",
         "description": "单例模式使用的缓存字典"
       },
-      // 如果编写深度学习工具，必须包含下列参数
+      // 如果编写深度学习工具，必须包含 device
       "device": {
         "type": "str",
         "description": "推理设备，如 cpu/cuda/mps/xpu/npu"
       },
+      // 只有当工具必须直接读取本地模型文件/目录时，才包含 model_dir
       "model_dir": {
         "type": "str",
         "description": "本地模型目录（由外部传入）"
@@ -181,7 +184,7 @@ class ToolMakerAgent(BaseAgent):
         ).replace(
             "$LEARNING_POLICY$",
             (
-                "当前会话允许深度学习工具。若使用模型推理，必须显式暴露 `device` / `model_dir` 并实现 OOM 回落。"
+                "当前会话允许深度学习工具。若使用模型推理，必须显式暴露 `device` 并实现 OOM 回落；仅本地文件路径加载场景需要暴露 `model_dir`。"
                 if self.allow_learning else
                 "当前会话禁用深度学习工具。你必须仅实现传统图像处理算法，不得生成任何依赖模型权重的代码。"
             ),
