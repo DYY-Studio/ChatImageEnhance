@@ -292,7 +292,8 @@ class Searcher:
                 url,
                 follow_redirects=True,
                 timeout=120.0,
-                headers={"User-Agent": "ChatImageEnhance/1.0"}
+                headers={"User-Agent": "ChatImageEnhance/1.0"},
+                verify=os.environ.get('REQUESTS_CA_BUNDLE', True)
             ) as response:
                 response.raise_for_status()
                 with open(temp_path, mode="wb") as f:
@@ -335,7 +336,8 @@ class Searcher:
                 raise
             req = httpx.Request(
                 download_url,
-                headers={"User-Agent": "ChatImageEnhance/1.0"}
+                headers={"User-Agent": "ChatImageEnhance/1.0"},
+                verify=os.environ.get('REQUESTS_CA_BUNDLE', True)
             )
             file_bytes = req.read()
 

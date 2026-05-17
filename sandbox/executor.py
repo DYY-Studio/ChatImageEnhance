@@ -85,8 +85,6 @@ class SandboxExecutor:
             __name__="chatimageenhance_sandbox",
             __package__=None,
             __builtins__=dict(
-                **safe_builtins,
-                __build_class__=py_builtins.__build_class__,
                 max=max,
                 min=min,
                 sum=sum,
@@ -96,6 +94,7 @@ class SandboxExecutor:
                 reversed=reversed,
                 list=list, # 危险可变对象，考虑进行安全封装，但目前先维持这样
                 dict=dict, # 危险可变对象，考虑进行安全封装，但目前先维持这样
+                **safe_builtins
             ),
             cv_wrappers=None,
             vision_metrics=None,
