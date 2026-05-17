@@ -92,18 +92,15 @@ class SearcherAgent(BaseAgent):
 
     def _read_localfile(self, path: str, start_line: int = 0, end_line: int = -1, clean_text: bool = False):
         try:
-            lines = ''
+            start_line = max(0, int(start_line))
+            end_line = int(end_line)
             with open(path, mode='r', encoding='utf-8') as f:
-                curr_line = -1
-                for line in f:
-                    curr_line += 1
-                    if curr_line < start_line:
-                        continue
-                    if end_line > start_line and curr_line > end_line:
-                        break
-                    else:
-                        lines += line
-            return lines
+                file_lines = f.read().splitlines()
+            if end_line < 0 or end_line > len(file_lines):
+                end_line = len(file_lines)
+            if end_line <= start_line:
+                return ''
+            return '\n'.join(file_lines[start_line:end_line])
         except Exception as e:
             return str(e)
 
@@ -162,22 +159,16 @@ class SearcherAgent(BaseAgent):
             self.curr_repo = self.github_client.get_repo(repo_name)
         try:
             file_content =  self.curr_repo.get_contents(file_path).decoded_content.decode()
-        except:
+        except Exception:
             return f'{file_path} text decode failed'
         file_lines = file_content.splitlines()
 
-        if end_line < 0:
-            if len(file_lines) >= start_line:
-                return '\n'.join(file_lines[start_line:])
-            else:
-                return file_content
-            
-        if len(file_lines) < max(end_line - start_line, 0):
-            return file_content
-        elif len(file_lines) < max(end_line, 0):
-            return '\n'.join(file_lines[:end_line - start_line])
-        else:
-            return '\n'.join(file_lines[start_line:end_line])
+        start_line = max(0, start_line)
+        if end_line < 0 or end_line > len(file_lines):
+            end_line = len(file_lines)
+        if end_line <= start_line:
+            return ''
+        return '\n'.join(file_lines[start_line:end_line])
         
 
 
