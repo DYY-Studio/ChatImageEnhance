@@ -252,21 +252,22 @@ def _modelscope_img_pipeline(
     cvt_output_color: bool = True
 ):
     try:
-        image_pipeline = None
-        try:
-            image_pipeline = pipeline(
-                pipeline_task, 
-                model_name,
-                device=device,
-                ignore_file_pattern=Searcher._MODEL_IGNORE_PATTERNS
-            )
-        except:
-            image_pipeline = pipeline(
-                pipeline_task, 
-                model_name,
-                device='cpu',
-                ignore_file_pattern=Searcher._MODEL_IGNORE_PATTERNS
-            )
+        image_pipeline = cache.get(cache_key, None) if cache is not None else None
+        if image_pipeline is None:
+            try:
+                image_pipeline = pipeline(
+                    pipeline_task, 
+                    model_name,
+                    device=device,
+                    ignore_file_pattern=Searcher._MODEL_IGNORE_PATTERNS
+                )
+            except:
+                image_pipeline = pipeline(
+                    pipeline_task, 
+                    model_name,
+                    device='cpu',
+                    ignore_file_pattern=Searcher._MODEL_IGNORE_PATTERNS
+                )
         if cache is not None and cache_key not in cache:
             cache[cache_key] = image_pipeline
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
