@@ -82,8 +82,8 @@ class ToolRegistry:
         """
         Return a copy of kwargs with runtime-owned defaults injected.
 
-        Currently this injects model_dir from schema metadata. Caller supplied
-        non-empty model_dir always wins.
+        Inject runtime-owned defaults from schema/cache metadata. Caller
+        supplied non-empty model_dir/device/cache always wins.
         """
         final_kwargs = dict(kwargs or {})
         try:
@@ -98,6 +98,18 @@ class ToolRegistry:
                 if model_dir:
                     final_kwargs["model_dir"] = model_dir
 
+        if cls._accepts_keyword(sig, "device"):
+            current = final_kwargs.get("device")
+            if current is None or (isinstance(current, str) and not current.strip()):
+                runtime_cache = final_kwargs.get("cache")
+                runtime_meta = (
+                    runtime_cache.get("__runtime__", {})
+                    if isinstance(runtime_cache, dict) else {}
+                )
+                preferred_device = str(runtime_meta.get("preferred_device") or "").strip()
+                if preferred_device:
+                    final_kwargs["device"] = preferred_device
+
         if not filter_unknown:
             return final_kwargs
 
@@ -111,24 +123,7 @@ class ToolRegistry:
     def _wrap_tool_func(cls, func: Callable, schema: dict) -> Callable:
         @functools.wraps(func)
         def wrapped(img: np.ndarray, *args, **kwargs):
-            try:
-                bound = inspect.signature(func).bind_partial(img, *args, **kwargs)
-                has_model_dir = "model_dir" in bound.arguments
-                model_dir_value = bound.arguments.get("model_dir")
-                model_dir_blank = (
-                    model_dir_value is None
-                    or (isinstance(model_dir_value, str) and not model_dir_value.strip())
-                )
-            except TypeError:
-                has_model_dir = "model_dir" in kwargs
-                model_dir_value = kwargs.get("model_dir")
-                model_dir_blank = (
-                    model_dir_value is None
-                    or (isinstance(model_dir_value, str) and not model_dir_value.strip())
-                )
-
-            if (not has_model_dir) or ("model_dir" in kwargs and model_dir_blank):
-                kwargs = cls.build_runtime_kwargs(func, schema, kwargs, filter_unknown=False)
+            kwargs = cls.build_runtime_kwargs(func, schema, kwargs, filter_unknown=False)
             return func(img, *args, **kwargs)
 
         return wrapped
