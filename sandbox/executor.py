@@ -472,6 +472,61 @@ class SandboxExecutor:
                 raise
         raise RuntimeError("Failed to prepare process code after dependency auto-recovery")
 
+    @staticmethod
+    def _schema_parameters(schema: dict | None) -> dict:
+        params = schema.get("parameters") if isinstance(schema, dict) else None
+        return params if isinstance(params, dict) else {}
+
+    @staticmethod
+    def _code_uses_learning_stack(code_str: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(torch|torchvision|transformers|diffusers|modelscope|huggingface_hub)\b",
+                code_str
+            )
+        )
+
+    def _validate_generated_tool_contract(
+        self,
+        tool_func: Callable,
+        func_name: str,
+        schema: dict,
+        code_str: str
+    ):
+        if not isinstance(schema, dict):
+            raise ValueError("Tool schema must be a dict")
+        if schema.get("name") != func_name:
+            raise ValueError("Tool schema.name must match generated function name")
+
+        sig = inspect.signature(tool_func)
+        sig_params = list(sig.parameters.values())
+        if not sig_params or sig_params[0].name != "img":
+            raise ValueError("Tool first argument must be named img")
+
+        schema_params = self._schema_parameters(schema)
+        uses_learning = bool(schema.get("requires_learning")) or self._code_uses_learning_stack(code_str)
+
+        if uses_learning:
+            for name in ("cache", "device"):
+                if not global_registry._accepts_keyword(sig, name):
+                    raise ValueError(f"Learning tool must accept runtime argument: {name}")
+                if name not in schema_params:
+                    raise ValueError(f"Learning tool schema.parameters must include: {name}")
+
+        if "model_dir" in schema_params and not global_registry._accepts_keyword(sig, "model_dir"):
+            raise ValueError("Tool schema exposes model_dir but function does not accept it")
+
+    @staticmethod
+    def _validate_tool_result(result: np.ndarray):
+        if not isinstance(result, np.ndarray):
+            raise ValueError("Tool retval is not np.ndarray")
+        if result.size == 0:
+            raise ValueError("Tool retval is an empty ndarray")
+        if result.ndim not in (2, 3):
+            raise ValueError(f"Tool retval must be 2D or 3D image, got ndim={result.ndim}")
+        if np.issubdtype(result.dtype, np.number) and not np.all(np.isfinite(result)):
+            raise ValueError("Tool retval contains non-finite values")
+
     def test_generated_tools(self, code_str: str, func_name: str, schema: dict) -> Exception | None:
         while True:
             exec_context = self._base_namespace.copy()
@@ -486,29 +541,47 @@ class SandboxExecutor:
                 if not tool_func:
                     raise ValueError(f"Agent 代码中未定义 {func_name} 函数")
 
-                test_img = np.random.randint(0, 256, (48, 64), dtype=np.uint8)
+                schema = dict(schema)
+                schema["requires_learning"] = bool(
+                    schema.get("requires_learning") or self._code_uses_learning_stack(code_str)
+                )
+                self._validate_generated_tool_contract(tool_func, func_name, schema, code_str)
+
+                test_images = (
+                    np.random.randint(0, 256, (48, 64), dtype=np.uint8),
+                    np.random.randint(0, 256, (48, 64, 3), dtype=np.uint8),
+                )
+                runtime_cache = {
+                    "__runtime__": {
+                        "preferred_device": "cpu",
+                        "performance_profile": "low_memory",
+                        "device_info": "tool self-test",
+                    }
+                }
 
                 sig = inspect.signature(tool_func)
                 test_kwargs = global_registry.build_runtime_kwargs(
                     tool_func,
                     schema,
-                    {"cache": {}, "device": "cpu"}
+                    {"cache": runtime_cache, "device": "cpu"}
                 )
-                sig.bind(test_img, **test_kwargs)
+                sig.bind(test_images[0], **test_kwargs)
 
-                result = tool_func(test_img, **test_kwargs)
-                if not isinstance(result, np.ndarray):
-                    raise ValueError("Tool retval is not np.ndarray")
+                for test_img in test_images:
+                    result = tool_func(test_img.copy(), **test_kwargs)
+                    self._validate_tool_result(result)
 
+                perf_img = test_images[-1]
+                repeat_count = 2 if schema["requires_learning"] else 5
                 start_time = time.perf_counter_ns()
-                for _ in range(5):
-                    global_registry.tools['Gaussian_Blur']['func'](test_img)
+                for _ in range(repeat_count):
+                    global_registry.tools['Gaussian_Blur']['func'](perf_img)
                 end_time = time.perf_counter_ns()
-                basic_cost = end_time - start_time
+                basic_cost = max(end_time - start_time, 1)
 
                 start_time = time.perf_counter_ns()
-                for _ in range(5):
-                    tool_func(test_img, **test_kwargs)
+                for _ in range(repeat_count):
+                    tool_func(perf_img.copy(), **test_kwargs)
                 end_time = time.perf_counter_ns()
                 target_cost = end_time - start_time
 
@@ -531,13 +604,6 @@ class SandboxExecutor:
                 else:
                     performance = "slowest"
 
-                schema = dict(schema)
-                schema["requires_learning"] = bool(
-                    re.search(
-                        r"\b(torch|torchvision|transformers|diffusers|modelscope|huggingface_hub)\b",
-                        code_str
-                    )
-                )
                 global_registry.dynamic_register(tool_func, schema, performance)
                 return None
             except Exception as e:
