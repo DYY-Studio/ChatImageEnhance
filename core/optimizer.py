@@ -48,7 +48,7 @@ class BayesianOptimizer:
                     raise optuna.TrialPruned()
                 return score
             except optuna.TrialPruned:
-                pass
+                raise
             except Exception as e:
                 last_error = traceback.format_exc()
                 logger.error("CODE EXEC ERROR: %s", e)
@@ -147,7 +147,7 @@ class BayesianOptimizer:
                     best_queue.append(result_img)
                 return score
             except optuna.TrialPruned:
-                pass
+                raise
             except Exception as e:
                 last_error = traceback.format_exc()
                 logger.error("CODE EXEC ERROR: %s", e)

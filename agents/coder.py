@@ -356,12 +356,12 @@ def process(img: np.ndarray, trial: optuna.Trial, cache: dict) -> np.ndarray:
             code = self._extract_code_block(llm_response)
             logger.info(f"成功生成代码：\n{code}")
             yield 'FINISH', code
-        except:
+        except Exception:
             try:
                 res_json = self._extract_json(llm_response)
                 logger.info(f"要求生成工具：\n{res_json}")
                 yield 'FINISH', res_json
-            except:
+            except Exception:
                 raise RuntimeError("LLM 回复既不包含合法的 JSON 工具请求，也未包含合法的 process 函数代码块")
 
     def generate_code(self, 
@@ -389,12 +389,12 @@ def process(img: np.ndarray, trial: optuna.Trial, cache: dict) -> np.ndarray:
             code = self._extract_code_block(llm_response)
             logger.info(f"成功生成代码：\n{code}")
             return code
-        except:
+        except Exception:
             try:
                 res_json = self._extract_json(llm_response)
                 logger.info(f"要求生成工具：\n{res_json}")
                 return res_json
-            except:
+            except Exception:
                 raise RuntimeError("LLM 回复既不包含合法的 JSON 工具请求，也未包含合法的 process 函数代码块")
 
     def execute(self, user_intent: str = '', init_details: str = '', previous_errors: str = None) -> str | dict:
