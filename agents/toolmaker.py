@@ -75,6 +75,10 @@ class ToolMakerAgent(BaseAgent):
 ## 2. 算子签名与规范
 * 函数名必须以 `safe_` 开头，例如：`def safe_cyberpunk_filter(...)`
 * 第一个参数**必须**是输入图像：`img: np.ndarray`。
+* 当深度学习模型结构无法通过库函数直接加载时，允许在 `safe_` 函数前定义必要的顶层辅助类或辅助函数，例如 `torch.nn.Module` 子类；这些辅助类必须只服务于当前算子，不得执行文件系统扫描、网络访问或进程级操作。
+  - 辅助类允许定义 `__init__` 和 `forward` 等普通模型方法，初始化父类时使用 `super().__init__()`。
+  - 优先使用 `torch.nn.Module`、`torch.nn.Sequential`、`torch.nn.Conv2d` 等完整命名；如确需导入别名，只能从允许库中导入，例如 `import torch.nn as nn`、`import torch.nn.functional as F`。
+  - 模型实例、预处理器和权重必须在 `safe_` 函数内部按 `cache` 单例加载，禁止在模块顶层实例化大模型或读取权重。
 * 函数会被多次运行，如果有重复使用的重加载内容，必须暴露 `cache: dict | None = None` 入参。
   - 利用`dict`的引用传递，使用单例模式设计，把重复使用的内容存储在特定的键值对中。
   - 键必须以当前算子名称作为前缀，正确: `cache['anime_style_v1_model']`，错误：`cache['model']`
@@ -107,7 +111,7 @@ class ToolMakerAgent(BaseAgent):
 
 ```json
 {
-  "code": "完整的 Python 函数代码字符串，注意换行和缩进",
+  "code": "完整的 Python 代码字符串，可包含必要的辅助类/辅助函数，但必须包含一个 safe_ 算子函数，注意换行和缩进",
   "schema": {
     "name": "函数名称，必须与代码中的 def 名称一致",
     "description": "一句话解释该算子的作用以及适用场景",

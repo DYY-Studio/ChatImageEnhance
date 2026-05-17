@@ -47,10 +47,39 @@ class AgentCodeChecker(ast.NodeVisitor):
         }
         prefixes = tuple(allowed_import_prefixes or DEFAULT_ALLOWED_IMPORT_PREFIXES)
         self.allowed_import_prefixes = tuple(p.strip() for p in prefixes if str(p).strip())
+        self._class_depth = 0
 
     def _check_import_target(self, module_name: str):
         if not is_allowed_import_path(module_name, self.allowed_import_prefixes):
             raise SecurityViolation(f"禁止导入非白名单模块: {module_name}")
+
+    @staticmethod
+    def _is_super_init_attribute(node: ast.Attribute) -> bool:
+        if node.attr != "__init__":
+            return False
+        value = node.value
+        return (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "super"
+        )
+
+    def visit_ClassDef(self, node):
+        if node.name.startswith("__"):
+            raise SecurityViolation(f"禁止定义私有类: {node.name}")
+        self._class_depth += 1
+        try:
+            self.generic_visit(node)
+        finally:
+            self._class_depth -= 1
+
+    def visit_FunctionDef(self, node):
+        if node.name.startswith("__") and not (self._class_depth > 0 and node.name == "__init__"):
+            raise SecurityViolation(f"禁止定义私有函数: {node.name}")
+        self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node):
+        raise SecurityViolation("禁止定义 async 函数")
         
     def visit_Import(self, node):
         for alias in node.names:
@@ -73,7 +102,7 @@ class AgentCodeChecker(ast.NodeVisitor):
 
     def visit_Attribute(self, node):
         # 拦截：访问 __subclasses__ 等双下划线私有属性（Python 逃逸常用手段）
-        if node.attr.startswith('__'):
+        if node.attr.startswith('__') and not self._is_super_init_attribute(node):
             raise SecurityViolation(f"禁止访问私有属性: {node.attr}")
         self.generic_visit(node)
 
