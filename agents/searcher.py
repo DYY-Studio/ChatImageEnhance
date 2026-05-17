@@ -345,12 +345,12 @@ class SearcherAgent(BaseAgent):
 你的首要策略是“先验候选驱动”：先根据自身已知的计算机视觉模型、经典算法、论文方法名、常见 Hub 模型 ID 或官方项目名，列出少量最可能命中的候选；搜索工具主要用于确认这些候选是否真实存在、是否可下载、是否有可运行推理接口，而不是从空泛关键词中漫游发现方案。
 不要把未经工具确认的先验知识当作最终事实；先验候选只是检索假设，最终 `submit_findings` 必须基于工具返回的证据。
 运行时来源策略：
-`web_search` / `read_html` 始终可用于理解任务名、算法名和模型名；$SOURCE_POLICY$
+`search_web` / `read_html` 始终可用于理解任务名、算法名和模型名；$SOURCE_POLICY$
 
 # Available Tools
 你可以按信息增益选择工具，不需要机械执行所有步骤；一旦证据足够即可提交。
 ## Web Search Engine (确认候选名、别名和官方来源)
-1. `web_search(query: str)`: 检索 DuckDuckGo (如果失败回落到 Bing)，返回前10条搜索结果
+1. `search_web(query: str)`: 检索 DuckDuckGo (如果失败回落到 Bing)，返回前10条搜索结果
 2. `read_html(url: str)`: 将指定URL指向的HTML文档转换为Markdown并返回
 
 ## GitHub (传统算法、综合代码库)

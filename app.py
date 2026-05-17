@@ -235,6 +235,8 @@ with st.sidebar:
 
         is_visual_model = st.toggle("该模型支持视觉输入", key="is_visual_model")
 
+        st.slider("代码问题最多重试次数", value=3, min_value=3, max_value=10, key="llm_coding_max_retries")
+
         with st.expander("高级"):
             reasoning_effort = st.selectbox(
                 "推理努力 Reasoning Effort", ['default', 'minimal', 'low', 'medium', 'high', 'xhigh'],
@@ -388,7 +390,8 @@ def get_orchestrator():
         allow_learning_process=allow_learning_process,
         process_device=process_device,
         process_profile=process_profile,
-        device_info=device_info_text
+        device_info=device_info_text,
+        max_llm_retries=st.session_state['llm_coding_max_retries']
     )
     return client, orch
 
