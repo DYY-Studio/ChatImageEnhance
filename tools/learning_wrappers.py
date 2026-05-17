@@ -261,14 +261,14 @@ def _modelscope_img_pipeline(
                     device=device,
                     ignore_file_pattern=Searcher._MODEL_IGNORE_PATTERNS
                 )
-            except:
+            except Exception:
                 image_pipeline = pipeline(
                     pipeline_task, 
                     model_name,
                     device='cpu',
                     ignore_file_pattern=Searcher._MODEL_IGNORE_PATTERNS
                 )
-        if cache is not None and cache_key not in cache:
+        if cache is not None:
             cache[cache_key] = image_pipeline
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         result_rgb = image_pipeline(img_rgb)[OutputKeys.OUTPUT_IMG]
