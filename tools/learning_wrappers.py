@@ -362,7 +362,7 @@ def safe_csrnet_color_enhance(
         if preprocesser is None:
             preprocesser = Preprocessor.from_pretrained(model_name)
 
-            if cache is not None: cache[f"{cache_key}_pre"] = model
+            if cache is not None: cache[f"{cache_key}_pre"] = preprocesser
 
         input_tensor = torch.from_numpy(preprocesser(img) / 255.0).float()
         input_tensor = input_tensor.permute(2, 0, 1).unsqueeze(0).to(device)
