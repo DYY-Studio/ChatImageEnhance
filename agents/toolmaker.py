@@ -1,11 +1,19 @@
 from agents.base_agent import BaseAgent
-from typing import Generator, Literal
+from typing import Generator, Iterable, Literal
 
 import logging
 
 logger = logging.getLogger("ToolMakerAgent")
 
 class ToolMakerAgent(BaseAgent):
+    _LEARNING_IMPORT_ROOTS = {
+        "torch",
+        "torchvision",
+        "transformers",
+        "diffusers",
+        "modelscope",
+        "huggingface_hub",
+    }
 
     def __init__(self, 
         llm_client, 
@@ -25,21 +33,47 @@ class ToolMakerAgent(BaseAgent):
         """
         # 构造CoderAgent专属的系统提示词，明确代码生成规则
         self.allow_learning = bool(allow_learning)
-        dynamic_imports = [
-            str(imp).strip() for imp in (additional_imports or [])
-            if str(imp).strip()
-        ]
-        if not self.allow_learning:
-            blocked_roots = {"torch", "torchvision", "transformers", "diffusers", "modelscope", "huggingface_hub"}
-            dynamic_imports = [
-                imp for imp in dynamic_imports
-                if imp.split(".", maxsplit=1)[0].strip().lower() not in blocked_roots
-            ]
-        self.additional_imports = dynamic_imports
+        self.additional_imports = self._normalize_additional_imports(additional_imports)
         system_prompt = self._build_system_prompt()
         # 调用父类初始化（LLM客户端、模型名、系统提示词、温度）
         super().__init__(llm_client, model_name, system_prompt, temperature, reasoning_effort, **kwargs)
         # 加载全局算子注册表（供Prompt注入可用CV算子信息）
+
+    def _normalize_additional_imports(self, imports: Iterable[str] | None) -> list[str]:
+        normalized: list[str] = []
+        for imp in imports or []:
+            token = str(imp).strip()
+            if not token:
+                continue
+            root = token.split(".", maxsplit=1)[0].strip().lower()
+            if (not self.allow_learning) and root in self._LEARNING_IMPORT_ROOTS:
+                continue
+            if token not in normalized:
+                normalized.append(token)
+        return normalized
+
+    def set_additional_imports(self, imports: Iterable[str] | None):
+        """Refresh the system prompt after search has resolved runtime deps."""
+        self.additional_imports = self._normalize_additional_imports(imports)
+        self.system_prompt = self._build_system_prompt()
+
+    def _allowed_optional_libraries_text(self) -> str:
+        extras = [f"`{imp}`" for imp in self.additional_imports]
+        if self.allow_learning:
+            libs = [
+                "`torch`",
+                "`torchvision`",
+                "`transformers`",
+                "`diffusers`",
+                "`modelscope`",
+            ]
+            if extras:
+                libs.extend(extras)
+            return ", ".join(libs)
+
+        if extras:
+            return "深度学习处理已禁用；额外允许的非深度学习模块：" + ", ".join(extras)
+        return "当前会话已禁用深度学习处理，且无额外模块。"
 
     def _build_system_prompt(self) -> str:
         """
@@ -167,24 +201,8 @@ class ToolMakerAgent(BaseAgent):
 }
 ```
         """.replace(
-            '$DYNAMIC_IMPORTS$', 
-            (
-                ', '.join(self.additional_imports) 
-                if self.additional_imports is not None and self.additional_imports 
-                else ''
-            ),
-            1
-        ).replace(
             "$LEARNING_LIBS$",
-            (
-                "`torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`, "
-                + (
-                    ', '.join(self.additional_imports)
-                    if self.additional_imports is not None and self.additional_imports
-                    else "（无额外模块）"
-                )
-            ) if self.allow_learning else
-            "当前会话已禁用深度学习处理，禁止使用 `torch` / `torchvision` / `transformers` / `diffusers` / `modelscope` 及任何模型推理链路。",
+            self._allowed_optional_libraries_text(),
             1
         ).replace(
             "$LEARNING_POLICY$",
