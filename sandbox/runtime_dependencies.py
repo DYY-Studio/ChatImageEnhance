@@ -352,6 +352,63 @@ class RuntimeDependencyManager:
         return True, dist_name
 
     @classmethod
+    def _parse_requirement(cls, requirement: str):
+        if Requirement is None:
+            return None
+        try:
+            return Requirement(str(requirement or "").strip())
+        except Exception:
+            return None
+
+    @staticmethod
+    def _requirement_marker_applies(req_obj, selected_extras: set[str] | None = None) -> bool:
+        marker = getattr(req_obj, "marker", None)
+        if marker is None:
+            return True
+
+        extras = {str(extra).strip() for extra in (selected_extras or set()) if str(extra).strip()}
+        if not extras:
+            try:
+                return bool(marker.evaluate({"extra": ""}))
+            except Exception:
+                return True
+
+        for extra in extras:
+            try:
+                if marker.evaluate({"extra": extra}):
+                    return True
+            except Exception:
+                continue
+        try:
+            return bool(marker.evaluate({"extra": ""}))
+        except Exception:
+            return False
+
+    @classmethod
+    def _requirement_extras(cls, requirement: str) -> set[str]:
+        req_obj = cls._parse_requirement(requirement)
+        return {str(extra).strip() for extra in (getattr(req_obj, "extras", None) or set()) if str(extra).strip()}
+
+    @classmethod
+    def _iter_required_dependencies(cls, dist_name: str, selected_extras: set[str] | None = None) -> list[str]:
+        try:
+            requirement_lines = importlib_metadata.requires(dist_name) or []
+        except importlib_metadata.PackageNotFoundError:
+            return []
+        except Exception:
+            return []
+
+        dependencies: list[str] = []
+        for req_text in requirement_lines:
+            req_obj = cls._parse_requirement(req_text)
+            if req_obj is None:
+                continue
+            if not cls._requirement_marker_applies(req_obj, selected_extras):
+                continue
+            dependencies.append(str(req_obj))
+        return dependencies
+
+    @classmethod
     def _candidate_import_names_for_dist(cls, dist_name: str) -> set[str]:
         names: set[str] = set()
         if not dist_name:
@@ -515,6 +572,74 @@ class RuntimeDependencyManager:
                 except OSError:
                     pass
 
+    def _install_package_selective_deps(
+        self,
+        package: str,
+        visiting: set[str] | None = None
+    ):
+        """
+        Install package with --no-deps, then recursively install metadata deps.
+
+        This is used when pip's resolver rejects a package because one of its
+        transitive dependencies pins an OpenCV wheel variant. We keep the
+        existing opencv-contrib-python and still install the rest of the chain.
+        """
+        package = self._normalize_package_name(str(package))
+        if not package:
+            return
+        self._validate_requirement_spec(package)
+
+        dist_name = self._extract_dist_name(package)
+        if not dist_name:
+            return
+
+        canonical = self._canonical_dist_name(dist_name)
+        visiting = visiting if visiting is not None else set()
+        if canonical in visiting:
+            return
+
+        is_satisfied, satisfied_dist = self._requirement_satisfied(package)
+        if is_satisfied:
+            if satisfied_dist:
+                self._installed_packages.add(self._canonical_dist_name(satisfied_dist))
+            return
+
+        visiting.add(canonical)
+        self._best_effort_release_for_install(dist_name)
+        result = self._run_pip_install(package, no_deps=True)
+        pip_output = f"{result.stdout or ''}\n{result.stderr or ''}"
+        if result.returncode != 0:
+            output_tail = self._pip_output_tail(pip_output)
+            detail = f" output={output_tail}" if output_tail else ""
+            raise RuntimeError(
+                "pip dynamic install failed during selective dependency install. "
+                f"package={package}; exit_code={result.returncode}.{detail} "
+                "If this is a Windows file-lock issue, restart the process and retry."
+            )
+
+        canonical = self._canonical_dist_name(dist_name)
+        self._installed_packages.add(canonical)
+        installed_version = self._get_installed_version(dist_name, refresh=True)
+        if installed_version is not None:
+            self._installed_dist_versions[canonical] = installed_version
+
+        for dependency in self._iter_required_dependencies(
+            dist_name,
+            selected_extras=self._requirement_extras(package)
+        ):
+            normalized_dependency = self._normalize_package_name(dependency)
+            if not normalized_dependency:
+                continue
+            self._validate_requirement_spec(normalized_dependency)
+            dep_satisfied, dep_dist = self._requirement_satisfied(normalized_dependency)
+            if dep_satisfied:
+                if dep_dist:
+                    self._installed_packages.add(self._canonical_dist_name(dep_dist))
+                continue
+            self._install_package_selective_deps(normalized_dependency, visiting)
+
+        visiting.discard(canonical)
+
     def install_packages(self, packages: Iterable[str] | None):
         if packages is None:
             return
@@ -537,8 +662,8 @@ class RuntimeDependencyManager:
             result = self._run_pip_install(package)
             pip_output = f"{result.stdout or ''}\n{result.stderr or ''}"
             if result.returncode != 0 and self._pip_error_mentions_blocked_opencv(pip_output):
-                result = self._run_pip_install(package, no_deps=True)
-                pip_output = f"{result.stdout or ''}\n{result.stderr or ''}"
+                self._install_package_selective_deps(package)
+                continue
 
             if result.returncode != 0:
                 output_tail = self._pip_output_tail(pip_output)
