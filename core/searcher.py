@@ -12,6 +12,7 @@ import re
 import httpx
 import importlib.metadata as importlib_metadata
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from utils import get_executable_dir
 
@@ -230,9 +231,93 @@ class Searcher:
         return normalized
 
     @staticmethod
+    def _safe_asset_filename(filename: str) -> str:
+        name = Path(str(filename or "").replace("\\", "/")).name.strip()
+        name = re.sub(r"[^A-Za-z0-9_.#@+=-]+", "_", name).strip("._ ")
+        return name or "asset.bin"
+
+    @classmethod
+    def _normalize_asset_urls(cls, asset_urls) -> list[dict[str, str]]:
+        if asset_urls is None:
+            return []
+        if isinstance(asset_urls, (str, dict)):
+            asset_urls = [asset_urls]
+        if not isinstance(asset_urls, list):
+            return []
+
+        normalized: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in asset_urls:
+            if isinstance(item, str):
+                url = item.strip()
+                filename = ""
+            elif isinstance(item, dict):
+                url = str(item.get("url") or "").strip()
+                filename = str(item.get("filename") or "").strip()
+            else:
+                continue
+
+            parsed = urlparse(url)
+            if parsed.scheme != "https" or not parsed.netloc:
+                continue
+            if url in seen:
+                continue
+            seen.add(url)
+
+            if not filename:
+                filename = unquote(Path(parsed.path).name)
+            normalized.append({
+                "url": url,
+                "filename": cls._safe_asset_filename(filename)
+            })
+        return normalized
+
+    @staticmethod
     def _get_repo_cache_dir(source: str, repo_id: str) -> Path:
         safe_repo = re.sub(r"[^A-Za-z0-9_.-]+", "__", repo_id.strip())
         return get_executable_dir() / "caches" / "model_assets" / source / safe_repo
+
+    def _download_url_asset(self, asset: dict[str, str], cache_dir: Path) -> str:
+        url = asset["url"]
+        filename = self._safe_asset_filename(asset.get("filename") or "")
+        local_path = cache_dir / filename
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        if local_path.exists() and local_path.stat().st_size > 0:
+            return str(local_path.resolve())
+
+        temp_path = local_path.with_suffix(local_path.suffix + ".part")
+        try:
+            with httpx.stream(
+                "GET",
+                url,
+                follow_redirects=True,
+                timeout=120.0,
+                headers={"User-Agent": "ChatImageEnhance/1.0"}
+            ) as response:
+                response.raise_for_status()
+                with open(temp_path, mode="wb") as f:
+                    for chunk in response.iter_bytes(chunk_size=1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
+            temp_path.replace(local_path)
+        finally:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+        return str(local_path.resolve())
+
+    def _download_url_assets(
+        self,
+        source: str,
+        repo_id: str,
+        asset_urls: list[dict[str, str]]
+    ) -> tuple[list[str], str]:
+        cache_dir = self._get_repo_cache_dir(source, repo_id)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        downloaded = [self._download_url_asset(asset, cache_dir) for asset in asset_urls]
+        return downloaded, str(cache_dir.resolve())
 
     def _download_github_file(self, repo, rel_path: str, cache_dir: Path) -> str:
         content = repo.get_contents(rel_path)
@@ -365,11 +450,14 @@ class Searcher:
         source = enriched.get("source")
         repo_id = str(enriched.get("repo_id") or "").strip()
         require_files = self._normalize_require_files(enriched.get("require_files"))
+        asset_urls = self._normalize_asset_urls(enriched.get("asset_urls"))
 
         enriched["downloaded_files"] = []
         enriched["download_dir"] = None
         enriched["download_error"] = None
         enriched["require_files"] = require_files
+        enriched["asset_urls"] = asset_urls
+        enriched["asset_files"] = [asset["filename"] for asset in asset_urls]
 
         if source and not self._is_source_allowed(source):
             enriched["download_error"] = f"source_disabled:{source}"
@@ -385,6 +473,9 @@ class Searcher:
                 files, folder = self._download_hf_assets(repo_id, require_files)
             else:
                 files, folder = self._download_modelscope_assets(repo_id, require_files)
+            if asset_urls:
+                asset_files, folder = self._download_url_assets(source, repo_id, asset_urls)
+                files.extend(asset_files)
             enriched["downloaded_files"] = files
             enriched["download_dir"] = folder
         except Exception as e:

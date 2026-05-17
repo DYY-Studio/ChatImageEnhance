@@ -4,7 +4,11 @@ import ast
 import time
 import inspect
 import re
+import sys
 import builtins as py_builtins
+
+from torchvision.transforms import functional
+sys.modules['torchvision.transforms.functional_tensor'] = functional
 
 from tools import global_registry
 from core.evaluator import Evaluator

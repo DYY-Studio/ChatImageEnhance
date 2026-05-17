@@ -305,7 +305,8 @@ class SearcherAgent(BaseAgent):
         dependencies: str = '', 
         summary: str = '', 
         source: Literal['github', 'huggingface', 'modelscope'] | None = None,
-        require_files: list[str] | None = None
+        require_files: list[str] | None = None,
+        asset_urls: list[str] | None = None
     ):
         return {
             "repo_id": repo_id,
@@ -313,7 +314,8 @@ class SearcherAgent(BaseAgent):
             "dependencies": dependencies,
             "summary": summary,
             "source": source,
-            "require_files": require_files
+            "require_files": require_files,
+            "asset_urls": asset_urls
         }
 
     def _build_system_prompt(self) -> str:
@@ -377,7 +379,8 @@ submit_findings(
     dependencies: str = '', 
     summary: str = '', 
     source: Optional[Literal['github', 'huggingface', 'modelscope']] = None,
-    require_files: Optional[list[str]] = None
+    require_files: Optional[list[str]] = None,
+    asset_urls: Optional[list[str]] = None
 )
 ```
 * 当你找到了足够构建工具的代码或算法步骤，或者尝试了所有可能均宣告失败时，调用此工具结束任务。
@@ -389,6 +392,7 @@ submit_findings(
   - `dependencies`: 包名，用于从`pypi`安装，以空格分隔，不要传入其他内容。
   - `source`: 这个项目来自哪个源，可以填写`github`, `huggingface`或`modelscope`
   - `require_files`: 需要下载的文件路径列表（如权重、配置、tokenizer、processor）。GitHub 传统算法场景通常留空即可（留空不会下载任何文件）；HF/ModelScope 留空会触发来源默认下载策略。
+  - `asset_urls`: 需要额外下载的直链资产 URL 列表，适用于“GitHub 代码 + Release 权重文件”等跨来源场景。只能填写可由程序直接 HTTPS 下载的文件链接，不要填写网盘、网页说明页或需要人工操作的链接。
 * 失败时不需要传入任何params，（可选）或可以传入`summary`解释原因。
 
 # Decision Policy (自适应检索决策)
@@ -410,8 +414,8 @@ submit_findings(
    - 国际通用模型、`diffusers` / `transformers` / `safetensors` 生态，优先 Hugging Face -> ModelScope -> GitHub。
    - GitHub 主要用于传统算法、官方模型代码补充、或 HF/ModelScope 没有推理说明时读取官方实现；不要把 GitHub 作为深度学习权重来源的首选。
 4. **GitHub 深度学习项目降权规则:**
-   - 如果 GitHub README 依赖 Google Drive、百度网盘、OneDrive、Release 大文件、Git LFS、手动下载 checkpoint，或权重链接不清晰，应立即降权或放弃。
-   - 只有当 GitHub 项目明确提供可 pip 安装的推理包、官方 HF/ModelScope 模型 ID、或权重可由标准 Python API 自动下载时，才可选为最终方案。
+   - 如果 GitHub README 依赖 Google Drive、百度网盘、OneDrive、Git LFS、手动下载 checkpoint，或权重链接不清晰，应立即降权或放弃。GitHub Release 权重只有在存在明确、可直接 HTTPS 下载的文件链接时才可使用，并必须填写 `asset_urls`。
+   - 只有当 GitHub 项目明确提供可 pip 安装的推理包、官方 HF/ModelScope 模型 ID、或权重可由标准 Python API / `asset_urls` 直链自动下载时，才可选为最终方案。
    - 对 GitHub 深度学习项目，`source` 通常不应填 `github`，除非最终确实只依赖 GitHub 代码且不需要难下载权重。
 5. **候选评分:**
    - 先看功能匹配度，再看权重下载可靠性，再看推理代码简洁度，再看依赖和设备适配，最后才看 stars/likes/downloads。
@@ -435,7 +439,7 @@ submit_findings(
 5. **下钻 (Drill):** 只在需要确认接口、依赖或最小文件清单时查看文件树和关键文件。HF/ModelScope 优先看 `README.md`, `app.py`, `inference.py`, `pipeline.py`, `config.json`, `model_index.json`；GitHub 优先看 `src`, `core`, `*.py`。
 6. **提取 (Extract):** 提取可复用的最小推理逻辑或算法步骤，包含必要 import、模型加载、输入输出约定和设备选择。
 7. **比较 (Compare):** 通常比较 2-3 个候选即可；如果第一个候选已经高度匹配且可下载可运行，可以见好就收。
-8. **总结 (Submit):** 整理出干净的代码片段或算法步骤，正确填写 `source`, `repo_id`, `dependencies`, `require_files`。
+8. **总结 (Submit):** 整理出干净的代码片段或算法步骤，正确填写 `source`, `repo_id`, `dependencies`, `require_files`, `asset_urls`。
 
 # Strict Rules (绝对铁律)
 1. **强制思考暂存 (Scratchpad):** 输出JSON中必须包含 `think` 字段，在其中记录：
@@ -457,7 +461,7 @@ submit_findings(
 8. **跨语言参考 (仅限GitHub):** 当且仅当多次尝试无法找到Python实现时，允许对其他语言的代码进行总结提炼，提交转写后的伪代码或Python代码。
 9. **设备符合:** 参考传入的设备信息，选择能够在该设备上正常运行的实现，严禁选择参数量过大无法在设备上运行的项目。
 10. **深度学习来源优先:** 深度学习类搜索必须优先尝试 Hugging Face / ModelScope。只有在二者没有合适模型、用户明确要求 GitHub、或 GitHub 是官方代码补充时，才使用 GitHub。
-11. **最小下载优先:** 对于 GitHub / HuggingFace / ModelScope，优先提交最小 `require_files`，避免整仓下载。常见必需文件包括：权重文件、配置文件、tokenizer/processor 文件、推理必须脚本。若 HF/ModelScope 模型结构复杂且标准快照下载更可靠，`require_files` 可以留空并在 `summary` 中说明原因。
+11. **最小下载优先:** 对于 GitHub / HuggingFace / ModelScope，优先提交最小 `require_files`，避免整仓下载。常见必需文件包括：权重文件、配置文件、tokenizer/processor 文件、推理必须脚本。若权重在 GitHub Release 或项目 README 给出了可直接下载的 HTTPS 文件链接，必须放入 `asset_urls`，不要假设本地已有权重。若 HF/ModelScope 模型结构复杂且标准快照下载更可靠，`require_files` 可以留空并在 `summary` 中说明原因。
 12. **权重可获得性优先:** 不要选择需要人工登录网页、网盘提取码、论坛下载、失效链接或 Git LFS 手动拉取的深度学习项目。可通过官方 Hub API 下载的候选优先级最高。
 13. **错误处理:** 遇到网络或 API 错误等无法修复的问题，直接提交“未找到”，并在 `summary` 字段说明。
 14. **见好就收:** 如果寻找多个目标后仍有部分功能无法实现，选择能实现最多功能的进行提交，不要因贪心超出步数限制。

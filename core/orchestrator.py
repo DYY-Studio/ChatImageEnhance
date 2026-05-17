@@ -110,6 +110,19 @@ class Orchestrator:
         if repo_id:
             enriched_schema["repo_id"] = repo_id
 
+        asset_urls = search_result.get("asset_urls")
+        if isinstance(asset_urls, list) and asset_urls:
+            schema_asset_urls = []
+            for item in asset_urls:
+                url = str(item.get("url") if isinstance(item, dict) else item).strip()
+                if url:
+                    schema_asset_urls.append(url)
+            if schema_asset_urls:
+                enriched_schema["asset_urls"] = schema_asset_urls
+        asset_files = search_result.get("asset_files")
+        if isinstance(asset_files, list) and asset_files:
+            enriched_schema["asset_files"] = [str(item) for item in asset_files if str(item).strip()]
+
         return enriched_schema
 
     @staticmethod
@@ -186,6 +199,11 @@ class Orchestrator:
             if isinstance(search_result.get("require_files"), list) and search_result["require_files"]:
                 extra_lines.append(
                     "- 需要的仓库内文件:\n  " + "\n  ".join(str(p) for p in search_result["require_files"])
+                )
+            if isinstance(search_result.get("asset_files"), list) and search_result["asset_files"]:
+                extra_lines.append(
+                    "- 已下载的外部资产文件（位于运行时注入的 model_dir 下）:\n  "
+                    + "\n  ".join(str(p) for p in search_result["asset_files"])
                 )
             if search_result.get("download_error"):
                 extra_lines.append(f"- 下载失败信息: {search_result['download_error']}")

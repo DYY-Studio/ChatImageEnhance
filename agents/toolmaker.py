@@ -69,6 +69,7 @@ class ToolMakerAgent(BaseAgent):
 - 系统已经设置 `HF_HOME` 和 `MODELSCOPE_CACHE`，repo-id 驱动的加载方式应优先依赖这些缓存根目录。
 - 对 Hugging Face / ModelScope 的标准接口（如 `from_pretrained(repo_id, local_files_only=True)`、`pipeline(..., model=repo_id)`、`Model.from_pretrained(repo_id)`），不要暴露 `model_dir`，应在函数内部使用固定 `repo_id` 常量并启用离线/本地优先参数。
 - 只有当模型加载必须依赖本地文件夹或文件路径时，才暴露 `model_dir: str = ''`，例如：自定义 `torch.load(model_dir + '/xxx.pth')`、ONNX/权重文件、GitHub 资产、或必须以本地目录作为 `from_pretrained(model_dir)` 输入的仓库快照。
+- 如果检索附加信息列出了“已下载的外部资产文件”，这些文件位于运行时注入的 `model_dir` 下；代码应按文件名相对 `model_dir` 读取，禁止假设权重已在当前工作目录。
 - 禁止在推理时隐式联网下载；不要硬编码 Hugging Face / ModelScope 缓存路径。
 
 ## 2. 算子签名与规范
