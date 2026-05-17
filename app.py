@@ -137,6 +137,30 @@ def normalize_process_operator_preference(
 def get_process_operator_preference_label(value: str) -> str:
     return PROCESS_OPERATOR_PREFERENCE_LABELS.get(value, value)
 
+def build_runtime_hint(
+    allow_learning_process: bool,
+    process_device: str,
+    process_profile: str,
+    device_info_text: str,
+    process_operator_preference: str | None = None
+) -> str:
+    lines = [
+        "--- 运行时约束 ---",
+        f"深度学习处理: {'enabled' if allow_learning_process else 'disabled'}",
+    ]
+    if process_operator_preference:
+        lines.append(
+            f"处理算子偏好: {get_process_operator_preference_label(process_operator_preference)}"
+        )
+    lines.extend([
+        f"处理设备偏好: {process_device}",
+        f"性能档位偏好: {process_profile}",
+        "设备信息:",
+        device_info_text,
+        "---",
+    ])
+    return "\n".join(lines).strip("\n")
+
 def get_allowed_search_sources(
     allow_learning_process: bool,
     operator_preference: str
@@ -410,16 +434,19 @@ if st.session_state.ui_scene in ("ToolMaker", "Chat"):
         if allow_learning_process else 'balanced'
     )
     device_info_text = format_device_info_for_prompt(get_device_info_subprocess())
-    runtime_hint = f"""
---- 运行时约束 ---
-深度学习处理: {'enabled' if allow_learning_process else 'disabled'}
-处理算子偏好: {get_process_operator_preference_label(process_operator_preference)}
-处理设备偏好: {process_device}
-性能档位偏好: {process_profile}
-设备信息:
-{device_info_text}
----
-""".strip('\n')
+    runtime_hint = build_runtime_hint(
+        allow_learning_process,
+        process_device,
+        process_profile,
+        device_info_text,
+        process_operator_preference
+    )
+    toolmaker_runtime_hint = build_runtime_hint(
+        allow_learning_process,
+        process_device,
+        process_profile,
+        device_info_text
+    )
 
 if st.session_state.ui_scene == "ToolMaker":
     render_toolmaker(get_orchestrator()[1])
@@ -767,7 +794,7 @@ if user_feedback:
                         search_result,
                         additional_imports=runtime_imports,
                         additional_packages=runtime_packages,
-                        runtime_context=runtime_hint
+                        runtime_context=toolmaker_runtime_hint
                     ):
                         if t == "CODE_TOOL.STREAM":
                             toolmaker_handler.content_chunk(body)
