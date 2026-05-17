@@ -12,6 +12,7 @@ sys.modules['torchvision.transforms.functional_tensor'] = functional
 
 from tools import global_registry
 from core.evaluator import Evaluator
+from core.model_assets import MODEL_ALLOW_PATTERNS, MODEL_IGNORE_PATTERNS
 from sandbox.code_checker import (
     AgentCodeChecker,
     DEFAULT_ALLOWED_IMPORT_PREFIXES,

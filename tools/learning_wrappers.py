@@ -240,7 +240,7 @@ def safe_ia3dlut_retouch(
 from modelscope.pipelines import pipeline
 from modelscope.utils.constant import Tasks
 from modelscope.outputs import OutputKeys
-from core.searcher import Searcher
+from core.model_assets import MODEL_IGNORE_PATTERNS
 def _modelscope_img_pipeline(
     img: np.ndarray,
     model_name: str,
@@ -259,14 +259,14 @@ def _modelscope_img_pipeline(
                     pipeline_task, 
                     model_name,
                     device=device,
-                    ignore_file_pattern=Searcher._MODEL_IGNORE_PATTERNS
+                    ignore_file_pattern=list(MODEL_IGNORE_PATTERNS)
                 )
             except Exception:
                 image_pipeline = pipeline(
                     pipeline_task, 
                     model_name,
                     device='cpu',
-                    ignore_file_pattern=Searcher._MODEL_IGNORE_PATTERNS
+                    ignore_file_pattern=list(MODEL_IGNORE_PATTERNS)
                 )
         if cache is not None:
             cache[cache_key] = image_pipeline

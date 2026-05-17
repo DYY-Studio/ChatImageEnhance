@@ -14,6 +14,7 @@ import importlib.metadata as importlib_metadata
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from core.model_assets import MODEL_ALLOW_PATTERNS, MODEL_IGNORE_PATTERNS
 from utils import get_executable_dir
 
 logger = logging.getLogger("Searcher")
@@ -30,28 +31,8 @@ class Searcher:
 
     # 近似 from_pretrained 的“最小必需文件”过滤规则：
     # 保留权重 + 配置 + tokenizer/processor + 推理相关代码；忽略样例图、文档、测试等噪声内容。
-    _MODEL_ALLOW_PATTERNS: list[str] = [
-        "*.safetensors", "*.bin", "*.pt", "*.pth", "*.ckpt", "*.onnx", "*.tflite", "*.gguf",
-        "*.json", "*.yaml", "*.yml", "*.txt", "*.model", "*.spm", "*.bpe", "*.jinja",
-        "*.py",
-        "config.json", "generation_config.json", "model_index.json",
-        "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
-        "vocab.json", "vocab.txt", "merges.txt",
-        "preprocessor_config.json", "processor_config.json", "feature_extractor_config.json",
-        "unet/*.json", "vae/*.json", "text_encoder/*.json", "text_encoder_2/*.json",
-        "scheduler/*.json"
-    ]
-    _MODEL_IGNORE_PATTERNS: list[str] = [
-        "*.png", "*.jpg", "*.jpeg", "*.gif", "*.bmp", "*.webp", "*.svg",
-        "*.mp4", "*.mov", "*.avi", "*.mkv", "*.webm",
-        "*.wav", "*.mp3", "*.flac", "*.ogg",
-        "*.md", "*.rst", "*.pdf",
-        "assets/**", "figures/**", "images/**", "media/**",
-        "docs/**", "doc/**",
-        "demo/**", "demos/**", "example/**", "examples/**", "samples/**", "sample/**",
-        "tests/**", "test/**", "benchmark/**", "benchmarks/**",
-        "training/**", "train/**"
-    ]
+    _MODEL_ALLOW_PATTERNS: list[str] = list(MODEL_ALLOW_PATTERNS)
+    _MODEL_IGNORE_PATTERNS: list[str] = list(MODEL_IGNORE_PATTERNS)
     # 常见“分发包名 != import 模块名”映射
     _PKG_IMPORT_ALIASES: dict[str, str] = {
         "pillow": "PIL",
