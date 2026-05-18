@@ -349,6 +349,231 @@ def _build_attempt_history_summary(
         entries = entries[-max_entries:]
     return "\n".join(entries)
 
+def _strip_markdown_code_fence(code: str) -> str:
+    text = str(code or "").strip()
+    match = re.fullmatch(r"```(?:python)?\s*\n?(.*?)\n?```", text, flags=re.DOTALL | re.IGNORECASE)
+    return match.group(1).strip() if match else text
+
+def _message_has_exportable_process(msg: dict) -> bool:
+    return bool(str(msg.get("process_code") or "").strip()) and "best_params" in msg
+
+def _previous_exportable_assistant_index(messages: list[dict], before_index: int) -> int | None:
+    for idx in range(before_index - 1, -1, -1):
+        msg = messages[idx]
+        if (
+            msg.get("role") == "assistant"
+            and "image" in msg
+            and not msg.get("test_mode")
+            and _message_has_exportable_process(msg)
+        ):
+            return idx
+    return None
+
+def _collect_export_process_chain(messages: list[dict], current_index: int) -> list[tuple[int, dict]]:
+    if current_index < 0 or current_index >= len(messages):
+        return []
+    current = messages[current_index]
+    if (
+        current.get("role") != "assistant"
+        or "image" not in current
+        or current.get("test_mode")
+        or not _message_has_exportable_process(current)
+    ):
+        return []
+
+    chain: list[tuple[int, dict]] = [(current_index, current)]
+    cursor = current_index
+    while messages[cursor].get("input_from_previous") or messages[cursor].get("input_source") == "previous_result":
+        prev_idx = _previous_exportable_assistant_index(messages, cursor)
+        if prev_idx is None:
+            break
+        chain.append((prev_idx, messages[prev_idx]))
+        cursor = prev_idx
+
+    return list(reversed(chain))
+
+def _process_code_to_export_step(process_code: str, function_name: str) -> str:
+    cleaned_code = _strip_markdown_code_fence(process_code)
+
+    try:
+        tree = ast.parse(cleaned_code)
+        func_node = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "process":
+                func_node = node
+                break
+
+        if func_node and func_node.body:
+            start_line = func_node.body[0].lineno - 1
+            end_line = func_node.end_lineno
+            lines = cleaned_code.split("\n")[start_line:end_line]
+            non_empty = [line for line in lines if line.strip()]
+            min_indent = min((len(line) - len(line.lstrip()) for line in non_empty), default=0)
+            normalized_lines = [
+                line[min_indent:] if len(line) > min_indent else line
+                for line in lines
+            ]
+            final_func_code = (
+                f"def {function_name}(img, params, cache):\n"
+                + "\n".join(["    " + line for line in normalized_lines])
+            )
+        else:
+            final_func_code = cleaned_code
+    except Exception:
+        final_func_code = cleaned_code
+
+    final_func_code = re.sub(r"\s*trial\s*=\s*.*?\n", "\n", final_func_code)
+
+    def replace_trial_suggest(match):
+        param_name = match.group(1)
+        return f'params["{param_name}"]'
+
+    return re.sub(
+        r"trial\.suggest_[a-zA-Z_]+\([\"']([a-zA-Z0-9_]+)[\"'][^)]*\)",
+        replace_trial_suggest,
+        final_func_code,
+    )
+
+def build_export_script_for_message(messages: list[dict], current_index: int) -> str | None:
+    chain = _collect_export_process_chain(messages, current_index)
+    if not chain:
+        return None
+
+    step_codes: list[str] = []
+    params_sequence: list[dict] = []
+    step_meta: list[dict] = []
+    for step_idx, (msg_idx, step_msg) in enumerate(chain, start=1):
+        function_name = f"process_step_{step_idx}"
+        step_code = _process_code_to_export_step(step_msg.get("process_code", ""), function_name)
+        step_codes.append(step_code)
+        params_sequence.append(step_msg.get("best_params", {}))
+        step_meta.append({
+            "function": function_name,
+            "message_index": msg_idx,
+            "input_source": step_msg.get("input_source", "original"),
+        })
+
+    used_functions = {}
+    all_step_code = "\n\n".join(step_codes)
+    matches = re.findall(r"(?:cv_wrappers)\.(\w+)\s*\(", all_step_code)
+
+    if matches:
+        logger.info(f"检测到的函数调用: {set(matches)}")
+    else:
+        logger.info("未检测到任何 cv_wrappers/skimage_wrappers 调用")
+
+    extract_funcs(matches, used_functions)
+    logger.info(f"最终 used_functions 包含的函数: {list(used_functions.keys())}")
+
+    wrapper_class_code = ""
+    if used_functions:
+        wrapper_methods = "\n\n".join(used_functions.values())
+        wrapper_class_code = f"""
+class cv_wrappers:
+{wrapper_methods}
+
+"""
+
+    step_calls = "\n".join(
+        f"    out = process_step_{idx}(out, params_sequence[{idx - 1}], cache)"
+        for idx in range(1, len(step_codes) + 1)
+    )
+
+    return f"""# -*- coding: utf-8 -*-
+# Auto-generated Image Enhancement Script
+# Generated by ChatImageEnhance
+# Usage: python image_enhancement_script.py <input_dir> <output_dir>
+
+import cv2
+import skimage
+import numpy as np
+import PIL
+from skimage import *
+import os
+import argparse
+import sys
+
+# 设置标准输出编码为 UTF-8（避免 Windows 命令行乱码）
+if sys.platform == 'win32':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
+{wrapper_class_code}
+{all_step_code}
+
+# Exported processing chain. Earlier entries are applied first.
+process_step_metadata = {repr(step_meta)}
+best_params_sequence = {repr(params_sequence)}
+best_params = best_params_sequence[-1] if best_params_sequence else {{}}
+
+def process(img, params_sequence=None):
+    \"\"\"Apply exported enhancement steps in the same order used in ChatImageEnhance.\"\"\"
+    if params_sequence is None:
+        params_sequence = best_params_sequence
+    cache = {{}}
+    out = img
+{step_calls}
+    return out
+
+def batch_process(input_dir, output_dir):
+    \"\"\"批量处理图像\"\"\"
+    if not os.path.exists(input_dir):
+        os.makedirs(input_dir, exist_ok=True)
+        print(f"已自动创建输入文件夹：{{input_dir}}")
+        print("请将图片放入该文件夹后重新运行脚本")
+        return
+
+    os.makedirs(output_dir, exist_ok=True)
+    supported_formats = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp')
+    files = [f for f in os.listdir(input_dir) if f.lower().endswith(supported_formats)]
+
+    if not files:
+        print(f'未在 "{{input_dir}}" 中找到支持的图片')
+        return
+
+    print(f"找到 {{len(files)}} 张图片，开始处理...")
+    for i, filename in enumerate(files):
+        img_path = os.path.join(input_dir, filename)
+        with open(img_path, mode='rb') as f:
+            file_bytes = np.asarray(bytearray(f.read()), dtype=np.uint8)
+        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        if image is not None:
+            try:
+                enhanced = process(image)
+                output_path = os.path.join(output_dir, filename)
+                succ, enc_img = cv2.imencode('.png', enhanced, [cv2.IMWRITE_PNG_COMPRESSION, 2])
+                with open(output_path, mode='wb') as f:
+                    f.write(enc_img.tobytes())
+                print(f"[{{i+1}}/{{len(files)}}] 已处理: {{filename}}")
+            except Exception as e:
+                print(f"[{{i+1}}/{{len(files)}}] 处理失败 {{filename}}: {{str(e)}}")
+        else:
+            print(f"[{{i+1}}/{{len(files)}}] 读取失败: {{filename}}")
+
+    print(f"\\n处理完成！结果保存至: {{output_dir}}")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='批量图像增强脚本')
+    parser.add_argument('input_dir', nargs='?', default='input_images', help='输入文件夹')
+    parser.add_argument('output_dir', nargs='?', default='output_images', help='输出文件夹')
+    parser.add_argument('--dry-run', action='store_true', help='仅预览文件，不处理')
+
+    args = parser.parse_args()
+
+    if args.dry_run:
+        print(f"预览模式：将处理 '{{args.input_dir}}' -> '{{args.output_dir}}'")
+        supported_formats = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp')
+        if os.path.exists(args.input_dir):
+            for f in os.listdir(args.input_dir):
+                if f.lower().endswith(supported_formats):
+                    print(f"- {{f}}")
+        else:
+            print(f"输入文件夹不存在：{{args.input_dir}}")
+    else:
+        batch_process(args.input_dir, args.output_dir)
+"""
+
 def delete_message(idx: int, target_only: bool = False):
     msgs: list = st.session_state.messages
     clear_encoded_cache = False
@@ -483,158 +708,11 @@ def render_message_content(msg, index: int):
                 )
 
             process_code = msg.get("process_code", "")
-            best_params = msg.get("best_params", {})
+            script_content = build_export_script_for_message(st.session_state.messages, index)
 
-            if not process_code or not best_params:
+            if not process_code or script_content is None:
                 st.button("📦 导出为处理脚本", disabled=True, help="需要生成处理代码和最优参数才能导出")
             else:
-                # 移除 Markdown 
-                cleaned_code = re.sub(r'^```python\n|```$', '', process_code, flags=re.MULTILINE).strip()
-                
-                # 提取并标准化 process 函数
-                try:
-                    tree = ast.parse(cleaned_code)
-                    func_node = None
-                    for node in ast.walk(tree):
-                        if isinstance(node, ast.FunctionDef) and node.name == 'process':
-                            func_node = node
-                            break
-                    
-                    if func_node:
-                        # 获取函数体原始代码片段
-                        start_line = func_node.body[0].lineno - 1
-                        end_line = func_node.end_lineno
-                        lines = cleaned_code.split('\n')[start_line:end_line]
-                        
-                        # 计算基准缩进并重置
-                        min_indent = min(len(line) - len(line.lstrip()) for line in lines if line.strip())
-                        normalized_lines = [line[min_indent:] if len(line) > min_indent else line for line in lines]
-                        
-                        # 重新组合函数定义
-                        final_func_code = "def process(img, params):\n" + "\n".join(["    " + line for line in normalized_lines])
-                    else:
-                        final_func_code = cleaned_code
-                except Exception:
-                    final_func_code = cleaned_code
-
-                #移除 Optuna 
-                final_func_code = re.sub(r'\s*trial\s*=\s*.*?\n', '\n', final_func_code)  # 移除 trial 定义
-                
-                def replace_trial_suggest(match):
-                    param_name = match.group(1)
-                    return f'params["{param_name}"]'
-                
-                # 匹配所有 trial.suggest_* 调用，包括其所有参数
-                final_func_code = re.sub(r'trial\.suggest_[a-zA-Z_]+\(["\']([a-zA-Z0-9_]+)["\'][^)]*\)', replace_trial_suggest, final_func_code)
-                
-                used_functions = {}
-                matches = re.findall(r'(?:cv_wrappers)\.(\w+)\s*\(', final_func_code)
-                
-                # 调试信息
-                if matches:
-                    logger.info(f"检测到的函数调用: {set(matches)}")
-                else:
-                    logger.info(f"未检测到任何 cv_wrappers/skimage_wrappers 调用")
-                
-                extract_funcs(matches, used_functions)
-                
-                logger.info(f"最终 used_functions 包含的函数: {list(used_functions.keys())}")
-                
-                # 构建只包含已使用函数的工具类
-                wrapper_class_code = ""
-                if used_functions:
-                    wrapper_methods = '\n\n'.join(used_functions.values())
-                    wrapper_class_code = f"""
-class cv_wrappers:
-{wrapper_methods}
-
-"""
-
-                script_content = f"""# -*- coding: utf-8 -*-
-# Auto-generated Image Enhancement Script
-# Generated by ChatImageEnhance
-# Usage: python image_enhancement_script.py <input_dir> <output_dir>
-
-import cv2
-import skimage
-import numpy as np
-import PIL
-from skimage import *
-import os
-import argparse
-import sys
-
-# 设置标准输出编码为 UTF-8（避免 Windows 命令行乱码）
-if sys.platform == 'win32':
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
-
-{wrapper_class_code}
-{final_func_code}
-
-# Optimized Parameters
-best_params = {repr(best_params)}
-
-def batch_process(input_dir, output_dir):
-    \"\"\"批量处理图像\"\"\"
-    # ===================== 修复：自动创建输入/输出文件夹 =====================
-    if not os.path.exists(input_dir):
-        os.makedirs(input_dir, exist_ok=True)
-        print(f"已自动创建输入文件夹：{{input_dir}}")
-        print("请将图片放入该文件夹后重新运行脚本")
-        return
-    
-    os.makedirs(output_dir, exist_ok=True)
-    supported_formats = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp')
-    files = [f for f in os.listdir(input_dir) if f.lower().endswith(supported_formats)]
-
-    if not files:
-        print(f'未在 "{{input_dir}}" 中找到支持的图片')
-        return
-
-    print(f"找到 {{len(files)}} 张图片，开始处理...")
-    for i, filename in enumerate(files):
-        img_path = os.path.join(input_dir, filename)
-        with open(img_path, mode='rb') as f:
-            file_bytes = np.asarray(bytearray(file.read()), dtype=np.uint8)
-        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        if image is not None:
-            try:
-                enhanced = process(image, best_params)
-                output_path = os.path.join(output_dir, filename)
-                succ, enc_img = cv2.imencode('.png', enhanced, [cv2.IMWRITE_PNG_COMPRESSION, 2])
-                with open(output_path, mode='wb') as f:
-                    f.write(enc_img.tobytes())
-                print(f"[{{i+1}}/{{len(files)}}] 已处理: {{filename}}")
-            except Exception as e:
-                print(f"[{{i+1}}/{{len(files)}}] 处理失败 {{filename}}: {{str(e)}}")
-        else:
-            print(f"[{{i+1}}/{{len(files)}}] 读取失败: {{filename}}")
-
-    print(f"\\n处理完成！结果保存至: {{output_dir}}")
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='批量图像增强脚本')
-    parser.add_argument('input_dir', nargs='?', default='input_images', help='输入文件夹')
-    parser.add_argument('output_dir', nargs='?', default='output_images', help='输出文件夹')
-    parser.add_argument('--dry-run', action='store_true', help='仅预览文件，不处理')
-
-    args = parser.parse_args()
-
-    if args.dry_run:
-        print(f"预览模式：将处理 '{{args.input_dir}}' -> '{{args.output_dir}}'")
-        supported_formats = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp')
-        if os.path.exists(args.input_dir):
-            for f in os.listdir(args.input_dir):
-                if f.lower().endswith(supported_formats):
-                    print(f"- {{f}}")
-        else:
-            print(f"输入文件夹不存在：{{args.input_dir}}")
-    else:
-        batch_process(args.input_dir, args.output_dir)  
-"""
-
                 st.download_button(
                     label="📦 导出为处理脚本",
                     data=script_content,
