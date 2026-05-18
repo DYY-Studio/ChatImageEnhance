@@ -20,6 +20,7 @@ from sandbox.code_checker import (
     is_allowed_import_path,
     validate_model_loaders_local_files_only,
 )
+from sandbox.safe_os_path import SAFE_OS_PATH_ATTRIBUTES, safe_os, safe_os_path
 from sandbox.runtime_dependencies import RuntimeDependencyManager
 from types import ModuleType, SimpleNamespace
 from typing import Callable, Iterable
@@ -84,6 +85,9 @@ class SandboxExecutor:
         return dict(
             np=np,
             optuna=optuna,
+            os=safe_os,
+            os_path=safe_os_path,
+            safe_os_path=safe_os_path,
             __name__="chatimageenhance_sandbox",
             __package__=None,
             __builtins__=dict(
@@ -124,6 +128,19 @@ class SandboxExecutor:
             raise SecurityViolation("禁止使用相对导入")
 
         mod_name = str(name or "").strip()
+        if mod_name in {"os", "os.path"}:
+            for item in (fromlist or ()):
+                token = str(item or "").strip()
+                if token == "*" or token.startswith("__"):
+                    raise SecurityViolation(f"禁止导入符号: {token}")
+                if mod_name == "os" and token != "path":
+                    raise SecurityViolation(f"沙盒 os 代理仅允许导入 path: {token}")
+                if mod_name == "os.path" and token not in SAFE_OS_PATH_ATTRIBUTES:
+                    raise SecurityViolation(f"禁止从 os.path 导入非安全符号: {token}")
+            return safe_os_path if mod_name == "os.path" and fromlist else safe_os
+        if mod_name.startswith("os."):
+            raise SecurityViolation(f"沙盒仅允许导入 os.path 安全封装: {mod_name}")
+
         allowed_prefixes = self._build_allowed_import_prefixes()
         if not is_allowed_import_path(mod_name, allowed_prefixes):
             raise SecurityViolation(f"禁止导入非白名单模块: {mod_name}")

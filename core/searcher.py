@@ -19,6 +19,52 @@ from utils import get_executable_dir
 
 logger = logging.getLogger("Searcher")
 
+
+class ModelAssetDownloadError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        source: str = "",
+        repo_id: str = "",
+        failed_file: str | None = None,
+        failed_url: str | None = None,
+        failed_filename: str | None = None,
+        stage: str = "",
+        original_error: Exception | None = None
+    ):
+        super().__init__(message)
+        self.source = source
+        self.repo_id = repo_id
+        self.failed_file = failed_file
+        self.failed_url = failed_url
+        self.failed_filename = failed_filename
+        self.stage = stage
+        self.original_error = original_error
+
+    def to_info(
+        self,
+        submitted_require_files: list[str],
+        submitted_asset_urls: list[dict[str, str]]
+    ) -> dict:
+        original = self.original_error
+        return {
+            "source": self.source,
+            "repo_id": self.repo_id,
+            "failed_file": self.failed_file,
+            "failed_url": self.failed_url,
+            "failed_filename": self.failed_filename,
+            "stage": self.stage,
+            "submitted_require_files": submitted_require_files,
+            "submitted_asset_urls": submitted_asset_urls,
+            # Backward-compatible aliases for existing prompts/tests.
+            "require_files": submitted_require_files,
+            "asset_urls": submitted_asset_urls,
+            "error_type": type(original).__name__ if original is not None else type(self).__name__,
+            "error": str(original if original is not None else self),
+            "message": str(self),
+        }
+
+
 class Searcher:
     _ALL_SOURCES: tuple[str, ...] = ("github", "huggingface", "modelscope")
     _PREFERRED_OPENCV_PACKAGE = "opencv-contrib-python"
@@ -266,6 +312,35 @@ class Searcher:
         if progress_callback:
             progress_callback(event)
 
+    @staticmethod
+    def _download_error(
+        exc: Exception,
+        source: str,
+        repo_id: str,
+        failed_file: str | None = None,
+        failed_url: str | None = None,
+        failed_filename: str | None = None,
+        stage: str = ""
+    ) -> ModelAssetDownloadError:
+        if isinstance(exc, ModelAssetDownloadError):
+            return exc
+
+        target = failed_file or failed_url or failed_filename or repo_id
+        message = (
+            f"Failed to download model asset"
+            f" (source={source}, repo_id={repo_id}, target={target}, stage={stage or 'download'}): {exc}"
+        )
+        return ModelAssetDownloadError(
+            message,
+            source=source,
+            repo_id=repo_id,
+            failed_file=failed_file,
+            failed_url=failed_url,
+            failed_filename=failed_filename,
+            stage=stage,
+            original_error=exc,
+        )
+
     def _download_url_asset(
         self,
         asset: dict[str, str],
@@ -375,16 +450,27 @@ class Searcher:
         cache_dir = self._get_repo_cache_dir(source, repo_id)
         cache_dir.mkdir(parents=True, exist_ok=True)
         total = len(asset_urls)
-        downloaded = [
-            self._download_url_asset(
-                asset,
-                cache_dir,
-                progress_callback=progress_callback,
-                index=index,
-                total=total
-            )
-            for index, asset in enumerate(asset_urls, start=1)
-        ]
+        downloaded = []
+        for index, asset in enumerate(asset_urls, start=1):
+            try:
+                downloaded.append(
+                    self._download_url_asset(
+                        asset,
+                        cache_dir,
+                        progress_callback=progress_callback,
+                        index=index,
+                        total=total
+                    )
+                )
+            except Exception as e:
+                raise self._download_error(
+                    e,
+                    source,
+                    repo_id,
+                    failed_url=asset.get("url"),
+                    failed_filename=asset.get("filename"),
+                    stage="direct_url_asset",
+                ) from e
         return downloaded, str(cache_dir.resolve())
 
     def _download_github_file(self, repo, rel_path: str, cache_dir: Path) -> str:
@@ -433,7 +519,16 @@ class Searcher:
 
         repo = self.github.get_repo(repo_id)
         for rel_path in require_files:
-            downloaded_files.append(self._download_github_file(repo, rel_path, cache_dir))
+            try:
+                downloaded_files.append(self._download_github_file(repo, rel_path, cache_dir))
+            except Exception as e:
+                raise self._download_error(
+                    e,
+                    "github",
+                    repo_id,
+                    failed_file=rel_path,
+                    stage="github_require_file",
+                ) from e
         return downloaded_files, str(cache_dir.resolve())
 
     def _download_hf_assets(self, repo_id: str, require_files: list[str]) -> tuple[list[str], str]:
@@ -443,24 +538,41 @@ class Searcher:
         downloaded_files: list[str] = []
         if require_files:
             for rel_path in require_files:
-                downloaded = self.searcher.hf_api.hf_hub_download(
-                    repo_id=repo_id,
-                    filename=rel_path,
-                    local_dir=str(cache_dir)
-                )
+                try:
+                    downloaded = self.searcher.hf_api.hf_hub_download(
+                        repo_id=repo_id,
+                        filename=rel_path,
+                        local_dir=str(cache_dir)
+                    )
+                except Exception as e:
+                    raise self._download_error(
+                        e,
+                        "huggingface",
+                        repo_id,
+                        failed_file=rel_path,
+                        stage="huggingface_require_file",
+                    ) from e
                 downloaded_files.append(str(Path(downloaded).resolve()))
             return downloaded_files, str(cache_dir.resolve())
 
         # 未指定具体文件时，下载整个仓库快照
         from huggingface_hub import snapshot_download
-        snapshot_dir = snapshot_download(
-            repo_id=repo_id,
-            local_dir=str(cache_dir),
-            local_dir_use_symlinks=False,
-            endpoint=os.environ.get("HF_ENDPOINT"),
-            allow_patterns=self._MODEL_ALLOW_PATTERNS,
-            ignore_patterns=self._MODEL_IGNORE_PATTERNS
-        )
+        try:
+            snapshot_dir = snapshot_download(
+                repo_id=repo_id,
+                local_dir=str(cache_dir),
+                local_dir_use_symlinks=False,
+                endpoint=os.environ.get("HF_ENDPOINT"),
+                allow_patterns=self._MODEL_ALLOW_PATTERNS,
+                ignore_patterns=self._MODEL_IGNORE_PATTERNS
+            )
+        except Exception as e:
+            raise self._download_error(
+                e,
+                "huggingface",
+                repo_id,
+                stage="huggingface_snapshot",
+            ) from e
         downloaded_files.append(str(Path(snapshot_dir).resolve()))
         return downloaded_files, str(cache_dir.resolve())
 
@@ -472,30 +584,47 @@ class Searcher:
         if require_files:
             from modelscope.hub.file_download import model_file_download
             for rel_path in require_files:
-                downloaded = model_file_download(
-                    repo_id,
-                    rel_path,
-                    local_dir=str(cache_dir)
-                )
+                try:
+                    downloaded = model_file_download(
+                        repo_id,
+                        rel_path,
+                        local_dir=str(cache_dir)
+                    )
+                except Exception as e:
+                    raise self._download_error(
+                        e,
+                        "modelscope",
+                        repo_id,
+                        failed_file=rel_path,
+                        stage="modelscope_require_file",
+                    ) from e
                 downloaded_files.append(str(Path(downloaded).resolve()))
             return downloaded_files, str(cache_dir.resolve())
 
         from modelscope.hub.snapshot_download import snapshot_download as ms_snapshot_download
         try:
-            snapshot_dir = ms_snapshot_download(
+            try:
+                snapshot_dir = ms_snapshot_download(
+                    repo_id,
+                    local_dir=str(cache_dir),
+                    allow_patterns=self._MODEL_ALLOW_PATTERNS,
+                    ignore_patterns=self._MODEL_IGNORE_PATTERNS
+                )
+            except TypeError:
+                # 向后兼容旧版参数名
+                snapshot_dir = ms_snapshot_download(
+                    repo_id,
+                    cache_dir=str(cache_dir),
+                    allow_file_pattern=self._MODEL_ALLOW_PATTERNS,
+                    ignore_file_pattern=self._MODEL_IGNORE_PATTERNS
+                )
+        except Exception as e:
+            raise self._download_error(
+                e,
+                "modelscope",
                 repo_id,
-                local_dir=str(cache_dir),
-                allow_patterns=self._MODEL_ALLOW_PATTERNS,
-                ignore_patterns=self._MODEL_IGNORE_PATTERNS
-            )
-        except TypeError:
-            # 向后兼容旧版参数名
-            snapshot_dir = ms_snapshot_download(
-                repo_id,
-                cache_dir=str(cache_dir),
-                allow_file_pattern=self._MODEL_ALLOW_PATTERNS,
-                ignore_file_pattern=self._MODEL_IGNORE_PATTERNS
-            )
+                stage="modelscope_snapshot",
+            ) from e
         downloaded_files.append(str(Path(snapshot_dir).resolve()))
         return downloaded_files, str(cache_dir.resolve())
 
@@ -524,7 +653,9 @@ class Searcher:
         enriched["additional_packages"] = deps
         enriched["additional_imports"] = dedup_imports
 
-        source = enriched.get("source")
+        source = str(enriched.get("source") or "").strip().lower()
+        if source:
+            enriched["source"] = source
         repo_id = str(enriched.get("repo_id") or "").strip()
         require_files = self._normalize_require_files(enriched.get("require_files"))
         asset_urls = self._normalize_asset_urls(enriched.get("asset_urls"))
@@ -532,17 +663,36 @@ class Searcher:
         enriched["downloaded_files"] = []
         enriched["download_dir"] = None
         enriched["download_error"] = None
+        enriched["download_error_info"] = None
+        enriched["download_attempted"] = False
+        enriched["findings_enriched"] = True
         enriched["require_files"] = require_files
         enriched["asset_urls"] = asset_urls
         enriched["asset_files"] = [asset["filename"] for asset in asset_urls]
 
         if source and not self._is_source_allowed(source):
             enriched["download_error"] = f"source_disabled:{source}"
+            enriched["download_error_info"] = {
+                "source": source,
+                "repo_id": repo_id,
+                "failed_file": None,
+                "failed_url": None,
+                "failed_filename": None,
+                "stage": "source_policy",
+                "submitted_require_files": require_files,
+                "submitted_asset_urls": asset_urls,
+                "require_files": require_files,
+                "asset_urls": asset_urls,
+                "error_type": "SourceDisabled",
+                "error": enriched["download_error"],
+                "message": enriched["download_error"],
+            }
             return enriched
 
         if not auto_download or source not in ("github", "huggingface", "modelscope") or not repo_id:
             return enriched
 
+        enriched["download_attempted"] = True
         try:
             if source == "github":
                 files, folder = self._download_github_assets(repo_id, require_files)
@@ -562,8 +712,50 @@ class Searcher:
             enriched["download_dir"] = folder
         except Exception as e:
             enriched["download_error"] = str(e)
+            if isinstance(e, ModelAssetDownloadError):
+                enriched["download_error_info"] = e.to_info(require_files, asset_urls)
+            else:
+                enriched["download_error_info"] = {
+                    "source": source,
+                    "repo_id": repo_id,
+                    "failed_file": None,
+                    "failed_url": None,
+                    "failed_filename": None,
+                    "stage": "download",
+                    "submitted_require_files": require_files,
+                    "submitted_asset_urls": asset_urls,
+                    "require_files": require_files,
+                    "asset_urls": asset_urls,
+                    "error_type": type(e).__name__,
+                    "error": str(e),
+                    "message": str(e),
+                }
 
         return enriched
+
+    @staticmethod
+    def _format_download_failure_feedback(enriched: dict) -> str:
+        info = enriched.get("download_error_info")
+        if not isinstance(info, dict):
+            info = {
+                "source": enriched.get("source"),
+                "repo_id": enriched.get("repo_id"),
+                "require_files": enriched.get("require_files"),
+                "asset_urls": enriched.get("asset_urls"),
+                "error": enriched.get("download_error"),
+            }
+        payload = {
+            "download_error": info,
+            "previous_summary": enriched.get("summary", ""),
+            "next_action": (
+                "请根据下载失败信息修正 require_files/asset_urls，选择另一个可自动下载的候选，"
+                "或在确认无可用方案时 submit_findings(summary=...) 说明失败原因。"
+            ),
+        }
+        return (
+            "Tool Use Error: Model asset download failed after submit_findings.\n"
+            + yaml.dump(payload, allow_unicode=True, indent=2)
+        )
 
     def use_tool(self, tool_name: str, params: dict):
         source = self._source_for_tool(tool_name)
@@ -578,7 +770,14 @@ class Searcher:
         else:
             return f"Tool Use Error: Cannot find tool {tool_name}"
 
-    def search(self, prompt: str, steps_limit: int = 30, interval: float = 0.5) -> Generator[tuple[str, str | dict], None, None]:
+    def search(
+        self,
+        prompt: str,
+        steps_limit: int = 30,
+        interval: float = 0.5,
+        auto_download_findings: bool = False,
+        progress_callback: Callable[[dict], None] | None = None
+    ) -> Generator[tuple[str, str | dict], None, None]:
         content: dict | None = None
         thinks: str = (
             f"用户输入: {prompt.strip()}\n"
@@ -648,6 +847,36 @@ class Searcher:
             yield f"THINK.{times}", content['think']
             logger.info(f"运行{times}: {content['think']}")
             if content['tool'] == 'submit_findings':
+                if auto_download_findings:
+                    enriched = self.enrich_findings(
+                        content.get("params"),
+                        auto_download=True,
+                        progress_callback=progress_callback
+                    )
+                    content["params"] = enriched
+                    if enriched.get("download_error"):
+                        tool_result = self._format_download_failure_feedback(enriched)
+                        thinks += (
+                            f"\n运行{times}: submit_findings 后模型资产下载失败，"
+                            "已把失败信息反馈给 SearcherAgent 继续处理。"
+                        )
+                        yield f"SEARCH.DOWNLOAD_ERROR.{times}", enriched.get("download_error")
+                        download_params = {
+                            "source": enriched.get("source"),
+                            "repo_id": enriched.get("repo_id"),
+                            "require_files": enriched.get("require_files"),
+                            "asset_urls": enriched.get("asset_urls"),
+                        }
+                        yield 'TOOL_CALL', {
+                            'tool': 'download_model_assets',
+                            'params': f"```\n{json.dumps(download_params, indent=2, ensure_ascii=False)}\n```",
+                            'result': f"```\n{tool_result.strip('`')}\n```"
+                        }
+                        content = None
+                        if times >= steps_limit:
+                            yield 'SEARCH.STEPS_LIMIT_REACHED', None
+                            return
+                        continue
                 break
 
             if times >= steps_limit:

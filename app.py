@@ -650,7 +650,8 @@ if user_feedback:
 
             evaluate_handler = StStreamResHandler(eva_status, eva_thinking_container)
 
-            img_to_process = st.session_state['best_bgr'] if step_by_step and st.session_state['best_bgr'] is not None else img_bgr
+            input_from_previous = bool(step_by_step and st.session_state['best_bgr'] is not None)
+            img_to_process = st.session_state['best_bgr'] if input_from_previous else img_bgr
 
             for t, body in orch.prepare_stream(
                 image=img_to_process,
@@ -763,7 +764,8 @@ if user_feedback:
                                         searcher, tool_request, search_container, search_steps_limit, search_interval
                                     )
                                     if isinstance(search_result, dict):
-                                        search_result = StEnrichFindings(searcher, search_result, search_container)
+                                        if not search_result.get("findings_enriched"):
+                                            search_result = StEnrichFindings(searcher, search_result, search_container)
                                         if search_result.get("download_error"):
                                             st.warning(f"模型资产下载失败：{search_result['download_error']}")
                         break
@@ -857,6 +859,8 @@ if user_feedback:
                 "eval_code": evaluate_code_str,
                 "process_code": process_code_str,
                 "best_params": best_params,
+                "input_from_previous": input_from_previous,
+                "input_source": "previous_result" if input_from_previous else "original",
                 # ===== [新增] 保存实际trial数到消息历史 =====
                 "n_trials_used": actual_n_trials,
             }

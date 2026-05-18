@@ -16,6 +16,67 @@ def _format_bytes(size: int | None) -> str:
     return f"{value:.1f} GB"
 
 
+def _render_asset_progress(event: dict, progress_slots: dict[str, DeltaGenerator]):
+    event_name = event.get("event")
+    filename = str(event.get("filename") or "asset.bin")
+    index = event.get("index") or 1
+    total = event.get("total") or 1
+    downloaded_bytes = event.get("downloaded_bytes")
+    total_bytes = event.get("total_bytes")
+    key = f"{index}:{filename}"
+
+    if event_name == "asset_start":
+        st.write(f"开始下载 {index}/{total}: `{filename}`")
+        progress_slots[key] = st.progress(
+            0,
+            text=f"{filename}: 正在连接..."
+        )
+        return
+
+    if event_name == "asset_skip":
+        st.write(
+            f"已存在，跳过下载 {index}/{total}: "
+            f"`{filename}` ({_format_bytes(downloaded_bytes)})"
+        )
+        progress_slots[key] = st.progress(
+            1.0,
+            text=f"{filename}: 已存在"
+        )
+        return
+
+    if event_name == "asset_progress":
+        slot = progress_slots.get(key)
+        if slot is None:
+            slot = st.progress(0, text=f"{filename}: 正在下载...")
+            progress_slots[key] = slot
+
+        if total_bytes:
+            ratio = min(float(downloaded_bytes or 0) / float(total_bytes), 1.0)
+            slot.progress(
+                ratio,
+                text=(
+                    f"{filename}: {_format_bytes(downloaded_bytes)} / "
+                    f"{_format_bytes(total_bytes)}"
+                )
+            )
+        else:
+            slot.progress(
+                0,
+                text=f"{filename}: 已下载 {_format_bytes(downloaded_bytes)}"
+            )
+        return
+
+    if event_name == "asset_done":
+        slot = progress_slots.get(key)
+        if slot is None:
+            slot = st.progress(0)
+            progress_slots[key] = slot
+        slot.progress(
+            1.0,
+            text=f"{filename}: 下载完成 ({_format_bytes(downloaded_bytes)})"
+        )
+
+
 def StEnrichFindings(
     searcher: Searcher,
     findings: dict | None,
@@ -23,6 +84,8 @@ def StEnrichFindings(
 ) -> dict:
     if not isinstance(findings, dict):
         return {}
+    if findings.get("findings_enriched"):
+        return findings
 
     target = container or st.container()
     progress_slots: dict[str, DeltaGenerator] = {}
@@ -34,64 +97,8 @@ def StEnrichFindings(
             note.write("正在解析依赖与模型资产...")
 
             def on_progress(event: dict):
-                event_name = event.get("event")
-                filename = str(event.get("filename") or "asset.bin")
-                index = event.get("index") or 1
-                total = event.get("total") or 1
-                downloaded_bytes = event.get("downloaded_bytes")
-                total_bytes = event.get("total_bytes")
-                key = f"{index}:{filename}"
-
-                if event_name == "asset_start":
-                    st.write(f"开始下载 {index}/{total}: `{filename}`")
-                    progress_slots[key] = st.progress(
-                        0,
-                        text=f"{filename}: 正在连接..."
-                    )
-                    return
-
-                if event_name == "asset_skip":
-                    st.write(
-                        f"已存在，跳过下载 {index}/{total}: "
-                        f"`{filename}` ({_format_bytes(downloaded_bytes)})"
-                    )
-                    progress_slots[key] = st.progress(
-                        1.0,
-                        text=f"{filename}: 已存在"
-                    )
-                    return
-
-                if event_name == "asset_progress":
-                    slot = progress_slots.get(key)
-                    if slot is None:
-                        slot = st.progress(0, text=f"{filename}: 正在下载...")
-                        progress_slots[key] = slot
-
-                    if total_bytes:
-                        ratio = min(float(downloaded_bytes or 0) / float(total_bytes), 1.0)
-                        slot.progress(
-                            ratio,
-                            text=(
-                                f"{filename}: {_format_bytes(downloaded_bytes)} / "
-                                f"{_format_bytes(total_bytes)}"
-                            )
-                        )
-                    else:
-                        slot.progress(
-                            0,
-                            text=f"{filename}: 已下载 {_format_bytes(downloaded_bytes)}"
-                        )
-                    return
-
-                if event_name == "asset_done":
-                    slot = progress_slots.get(key)
-                    if slot is None:
-                        slot = st.progress(0)
-                        progress_slots[key] = slot
-                    slot.progress(
-                        1.0,
-                        text=f"{filename}: 下载完成 ({_format_bytes(downloaded_bytes)})"
-                    )
+                if event.get("event"):
+                    _render_asset_progress(event, progress_slots)
 
             enriched = searcher.enrich_findings(
                 findings,
@@ -117,8 +124,18 @@ def StSearch(
         with status:
             chat_message = st.chat_message("assistant")
             handler = StStreamResHandler(chat_message, chat_message)
+            asset_progress_slots: dict[str, DeltaGenerator] = {}
 
-            for t, body in searcher.search(tool_request, steps_limt, interval):
+            def on_asset_progress(event: dict):
+                _render_asset_progress(event, asset_progress_slots)
+
+            for t, body in searcher.search(
+                tool_request,
+                steps_limt,
+                interval,
+                auto_download_findings=True,
+                progress_callback=on_asset_progress
+            ):
                 if t.startswith("THINK"):
                     handler.set_content(body)
                     chat_message = st.chat_message("assistant")
@@ -136,6 +153,9 @@ def StSearch(
                 elif t == 'SEARCH.API_LIMIT_REACHED':
                     with chat_message:
                         st.write('⚠️ GitHub Search API 访问上限已达，系统将继续尝试 HuggingFace / ModelScope')
+                elif t.startswith("SEARCH.DOWNLOAD_ERROR"):
+                    with chat_message:
+                        st.warning(f"模型资产下载失败，已反馈给 SearcherAgent：{body}")
                 elif t == "SEARCH.FINISH":
                     status.update(state="complete")
                     with chat_message:

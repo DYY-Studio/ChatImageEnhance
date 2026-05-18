@@ -196,7 +196,8 @@ class CoderAgent(BaseAgent):
     - **禁止调优的参数类型**：`cache`、`device`、`model_dir`、字符串路径、模型ID等运行时/环境参数，必须使用常量或直接透传，不得 `trial.suggest_*`
     - 如果算子暴露了 `model_dir` 参数，它是运行时固定参数，会由系统根据算子 schema 中的 `source` / `repo_id` 元数据自动注入；除非用户明确提供自定义本地路径，否则不要在调用算子时手写 `model_dir`。
 * **库访问**：你只能使用下列库：
-    - 基础处理: `np` (numpy), `cv2` (opencv-contrib-python), `optuna`, `skimage` (scikit-image), `PIL` (pillow) 以及提供的算子库 `cv_wrappers`
+    - 基础处理: `np` (numpy), `cv2` (opencv-contrib-python), `optuna`, `skimage` (scikit-image), `PIL` (pillow), 预注入的只读 `os.path` / `os_path` 安全路径封装，以及提供的算子库 `cv_wrappers`
+    - `os.path` / `os_path` 仅允许路径字符串拼接/规范化函数（如 `join`, `normpath`, `basename`, `dirname`, `splitext`），禁止 `exists`, `isfile`, `isdir`, `realpath`, `expanduser`, `expandvars`, `getmtime`, `getsize` 等文件系统或环境探测函数
     - 深度学习:
       {learning_libraries_text}
 * **算子调用**：所有算子必须通过 `cv_wrappers.算子名(img, **params)` 的形式调用
@@ -215,6 +216,8 @@ class CoderAgent(BaseAgent):
 ### Strategy & Best Practices / 策略建议
 * **命名规范**：在 `trial.suggest` 中使用 `"{{算子名}}_{{参数名}}"` 的命名方式，防止参数冲突。
 * **流程合理性**：遵循经典的 CV 顺序（例如：去噪 -> 增强 -> 边缘检测）。
+* **历史反馈利用**：如果用户上下文包含“历史尝试摘要”，其中只记录更早轮次用过的算子和用户原文反馈，不包含系统情绪判断。你需要自行理解这些反馈，判断是否继续沿用、调整参数、切换算子组合，或在现有算子不足时输出 `NEED_NEW_TOOL`。除非有明确理由，避免机械重复用户已经多次反馈不满意的算子组合。
+* **增量处理语义**：如果用户上下文标明“本轮输入图像来源”为“上一轮结果图像”，本轮代码会直接作用在上一轮输出上。此时应把用户要求理解为对当前最佳结果的增量调整，避免无理由再次施加强烈全局增强；必要时根据上一轮完整代码和历史摘要选择更温和、互补或修正性的算子。
 * **边界保护**：确保每个参数都在 Schema 给定的 `range` 范围内，不要越界。
 * **合理约束**：选择符合描述而适当合理的参数范围，减少 Optuna 调优的搜索量，避免使用过于极端的参数导致图像完全不可用。如果一个参数没有调优的价值，必须使用常数来阻止Optuna调优。
 * **目的单调**：除非用户的指示本身没有方向性，否则避免使用没有明确指向，在特定区间反复震荡的范围（如[-2.0, 2.0]）。

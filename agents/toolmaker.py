@@ -96,12 +96,17 @@ class ToolMakerAgent(BaseAgent):
 ## 1. 允许使用的环境与库
 - 你**只能**使用当前上下文中存在的以下库：
     - `numpy` (作为 `np`), `cv2` (opencv-contrib-python), `skimage` (scikit-image), `math`, `PIL` (pillow)。
+    - 沙盒预注入只读 `os.path` 安全封装，也可用 `os_path`；仅用于路径字符串拼接/规范化。
     - $LEARNING_LIBS$
-- 你不能导入任何其他标准库（如 `os`, `sys`, `subprocess` 等）或第三方库。
+- 你不能导入任何其他标准库（如 `sys`, `subprocess` 等）或第三方库；如需处理本地 `model_dir` 下的文件名，只能使用预注入的 `os.path` / `os_path` 安全子集。
+- `os.path` 安全子集仅包含 `join`, `normpath`, `abspath`, `dirname`, `basename`, `split`, `splitext`, `splitdrive`, `isabs`, `relpath`, `commonpath`, `commonprefix`, `normcase` 和路径分隔常量；禁止使用 `exists`, `isfile`, `isdir`, `realpath`, `expanduser`, `expandvars`, `getmtime`, `getsize` 等文件系统或环境探测函数。
 - **绝对禁止**使用 `exec`, `eval`, `open`, 以及任何带有文件系统或网络访问性质的代码。
 - $LEARNING_POLICY$
 - 系统已经设置 `HF_HOME` 和 `MODELSCOPE_CACHE`，repo-id 驱动的加载方式应优先依赖这些缓存根目录。
-- **Hugging Face / ModelScope 离线加载硬性规则**：只要调用 Hugging Face 或 ModelScope 的模型加载/推理入口，必须显式传入 `local_files_only=True`，包括但不限于 `from_pretrained(...)`、`pipeline(...)` / `Pipeline(...)`、`snapshot_download(...)`、`hf_hub_download(...)`。正确示例：`AutoModel.from_pretrained(repo_id, local_files_only=True)`、`DiffusionPipeline.from_pretrained(repo_id, local_files_only=True)`、`pipeline(task, model=repo_id, local_files_only=True)`、`Model.from_pretrained(repo_id, local_files_only=True)`。如果某个高级接口不支持 `local_files_only=True`，禁止使用该高级接口，改用支持离线加载的底层接口或仅在必须时使用运行时注入的 `model_dir`。
+- **Hugging Face / ModelScope 离线加载硬性规则**:
+  * 只要调用 Hugging Face 或 ModelScope 的模型加载/推理入口，必须显式传入 `local_files_only=True`
+  * 包括但不限于 `from_pretrained(...)`、`pipeline(...)` / `Pipeline(...)`、`snapshot_download(...)`、`hf_hub_download(...)`。
+  * 正确示例：`AutoModel.from_pretrained(repo_id, local_files_only=True)`、`DiffusionPipeline.from_pretrained(repo_id, local_files_only=True)`、`pipeline(task, model=repo_id, local_files_only=True)`、`Model.from_pretrained(repo_id, local_files_only=True)`。如果某个高级接口不支持 `local_files_only=True`，禁止使用该高级接口，改用支持离线加载的底层接口或仅在必须时使用运行时注入的 `model_dir`。
 - 对 Hugging Face / ModelScope 的标准 repo-id 接口，不要暴露 `model_dir`，应在函数内部使用固定 `repo_id` 常量并启用 `local_files_only=True`。
 - 只有当模型加载必须依赖本地文件夹或文件路径时，才暴露 `model_dir: str = ''`，例如：自定义 `torch.load(model_dir + '/xxx.pth')`、ONNX/权重文件、GitHub 资产、或必须以本地目录作为 `from_pretrained(model_dir)` 输入的仓库快照。
 - 如果检索附加信息列出了“已下载的外部资产文件”，这些文件位于运行时注入的 `model_dir` 下；代码应按文件名相对 `model_dir` 读取，禁止假设权重已在当前工作目录。

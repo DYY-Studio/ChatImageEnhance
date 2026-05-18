@@ -138,5 +138,82 @@ def safe_model(img, cache=None, device='cpu'):
         self.assertEqual(find_model_loader_calls_missing_local_files_only(code), [])
 
 
+class SafeOSPathCheckerTests(unittest.TestCase):
+    def test_allows_safe_os_path_proxy_usage(self):
+        code = """
+def safe_path(img):
+    name = os.path.basename(os.path.join('models', 'weights.pth'))
+    other = os_path.splitext('image.png')[1]
+    return img
+"""
+        AgentCodeChecker().visit(ast.parse(code))
+
+    def test_allows_safe_os_path_import_forms(self):
+        code = """
+import os
+import os.path as osp
+from os import path
+from os.path import join, basename
+
+def safe_path(img):
+    name = basename(join('models', 'weights.pth'))
+    ext = path.splitext('image.png')[1]
+    root = osp.dirname('models/weights.pth')
+    return img
+"""
+        AgentCodeChecker().visit(ast.parse(code))
+
+    def test_allows_safe_os_path_aliases_that_shadow_preinjected_names(self):
+        code = """
+import os.path as os
+import os as os_path
+
+def safe_path(img):
+    name = os.basename('models/weights.pth')
+    other = os_path.path.basename('models/other.pth')
+    return img
+"""
+        AgentCodeChecker().visit(ast.parse(code))
+
+    def test_blocks_unsafe_os_attribute(self):
+        code = """
+import os
+
+def safe_path(img):
+    os.system('echo unsafe')
+    return img
+"""
+        with self.assertRaises(SecurityViolation):
+            AgentCodeChecker().visit(ast.parse(code))
+
+    def test_blocks_unsafe_os_path_attribute(self):
+        code = """
+def safe_path(img):
+    return os.path.exists('models/weights.pth')
+"""
+        with self.assertRaises(SecurityViolation):
+            AgentCodeChecker().visit(ast.parse(code))
+
+    def test_blocks_unsafe_os_path_import(self):
+        code = """
+from os.path import exists
+
+def safe_path(img):
+    return img
+"""
+        with self.assertRaises(SecurityViolation):
+            AgentCodeChecker().visit(ast.parse(code))
+
+    def test_blocks_os_submodule_imports(self):
+        code = """
+import os.environ
+
+def safe_path(img):
+    return img
+"""
+        with self.assertRaises(SecurityViolation):
+            AgentCodeChecker().visit(ast.parse(code))
+
+
 if __name__ == "__main__":
     unittest.main()
