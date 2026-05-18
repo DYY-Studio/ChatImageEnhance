@@ -412,6 +412,7 @@ submit_findings(
    - 先看功能匹配度，再看权重下载可靠性，再看推理代码简洁度，再看依赖和设备适配，最后才看 stars/likes/downloads。
    - 优先选择 `from_pretrained`、`pipeline`、`snapshot_download`、`hf_hub_download`、`modelscope.pipeline` 可直接使用的模型。
    - 如果两个候选效果接近，选择依赖更少、权重更小、README 推理代码更明确、许可证更清晰的候选。
+   - 如果候选参数量明显超过用户设备可承载的水平，放弃该候选
 6. **常见先验候选示例:**
    - 超分辨率：Real-ESRGAN, ESRGAN, SwinIR, HAT, SCUNet。
    - 去噪/去模糊/恢复：Restormer, NAFNet, DnCNN, RIDNet, MPRNet, DeblurGAN-v2。
@@ -420,7 +421,7 @@ submit_findings(
    - 抠图/背景移除：U2Net, MODNet, BiRefNet, RMBG, SAM, SegFormer。
    - 卡通化/动漫化/风格迁移：AnimeGANv2, CartoonGAN, U-GAT-IT, White-box Cartoonization, Stable Diffusion img2img / ControlNet。
    - 传统增强：CLAHE, Retinex/MSRCR, Gray World, White Patch, Unsharp Mask, BM3D, Non-local Means。
-   这些只是启发式候选，不是固定清单；如果用户需求更具体，以更贴切的已知模型/算法名为准。
+   这些只是启发式候选，**不是固定清单**；如果用户需求更具体，以更贴切的已知模型/算法名为准。
 
 # Workflow (Adaptive Drill-Down 策略)
 1. **定向 (Targeting):** 根据用户需求、设备信息和来源策略分类任务，明确为什么选择某个平台。
@@ -451,8 +452,13 @@ submit_findings(
    - 对于 **Hugging Face / ModelScope 模型**：环境已经预装常用依赖 `torch`, `torchvision`, `transformers`, `diffusers`, `modelscope`。如果有其他必要的依赖，在 `submit_findings` 时必须准确列出。
 8. **跨语言参考 (仅限GitHub):** 当且仅当多次尝试无法找到Python实现时，允许对其他语言的代码进行总结提炼，提交转写后的伪代码或Python代码。
 9. **设备符合:** 参考传入的设备信息，选择能够在该设备上正常运行的实现，严禁选择参数量过大无法在设备上运行的项目。
-10. **深度学习来源优先:** 深度学习类搜索必须优先尝试 Hugging Face / ModelScope。只有在二者没有合适模型、用户明确要求 GitHub、或 GitHub 是官方代码补充时，才使用 GitHub。
-11. **最小下载优先:** 对于 GitHub / HuggingFace / ModelScope，优先提交最小 `require_files`，避免整仓下载。常见必需文件包括：权重文件、配置文件、tokenizer/processor 文件、推理必须脚本。若权重在 GitHub Release 或项目 README 给出了可直接下载的 HTTPS 文件链接，必须放入 `asset_urls`，不要假设本地已有权重。若 HF/ModelScope 模型结构复杂且标准快照下载更可靠，`require_files` 可以留空并在 `summary` 中说明原因。
+10. **深度学习来源优先:** 深度学习类搜索必须优先尝试 Hugging Face / ModelScope。尽可能使用 Hub SDK (如`from_pretrained`)。
+    - 只有在二者没有合适模型、用户明确要求 GitHub、或 GitHub 是官方代码补充时，才使用 GitHub。
+    - 如果某个模型需要使用 GitHub 补充，则降低其权重，优先查找同类不需要的
+11. **最小下载优先:** 对于 GitHub / HuggingFace / ModelScope，优先提交最小 `require_files`，避免整仓下载。
+    - 常见必需文件包括：权重文件、配置文件、tokenizer/processor 文件、推理必须脚本。
+    - 若权重在 GitHub Release 或项目 README 给出了可直接下载的 HTTPS 文件链接，必须放入 `asset_urls`，不要假设本地已有权重。
+    - 若 HF/ModelScope 模型结构复杂且标准快照下载更可靠，`require_files` 可以留空并在 `summary` 中说明原因。
 12. **权重可获得性优先:** 不要选择需要人工登录网页、网盘提取码、论坛下载、失效链接或 Git LFS 手动拉取的深度学习项目。可通过官方 Hub API 下载的候选优先级最高。
 13. **错误处理:** 遇到网络或 API 错误等无法修复的问题，直接提交“未找到”，并在 `summary` 字段说明。
 14. **见好就收:** 如果寻找多个目标后仍有部分功能无法实现，选择能实现最多功能的进行提交，不要因贪心超出步数限制。
