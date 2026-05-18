@@ -126,6 +126,7 @@ def is_likely_spam_results(results: List[WebSearchEntry]) -> bool:
 # ---------------------------------------------------------
 # 核心搜索逻辑类
 # ---------------------------------------------------------
+import os
 class WebSearchTool:
     USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
     DEFAULT_MAX_RESULTS = 5
@@ -133,7 +134,7 @@ class WebSearchTool:
 
     def __init__(self, timeout_ms: int = DEFAULT_TIMEOUT_MS):
         self.timeout = timeout_ms / 1000.0
-        self.session = httpx.Client()
+        self.session = httpx.Client(verify=os.environ.get('REQUESTS_CA_BUNDLE', True))
         self.session.headers.update({"User-Agent": self.USER_AGENT})
 
     def search(self, query: str, max_results: int = DEFAULT_MAX_RESULTS) -> WebSearchResponse:
