@@ -385,6 +385,7 @@ submit_findings(
   - `require_files`: 需要下载的文件路径列表（如权重、配置、tokenizer、processor）。GitHub 传统算法场景通常留空即可（留空不会下载任何文件）；HF/ModelScope 留空会触发来源默认下载策略。
   - `asset_urls`: 需要额外下载的直链资产 URL 列表，适用于“GitHub 代码 + Release 权重文件”等跨来源场景。只能填写可由程序直接 HTTPS 下载的文件链接，不要填写网盘、网页说明页或需要人工操作的链接。
 * 失败时不需要传入任何params，（可选）或可以传入`summary`解释原因。
+* 系统会在 `submit_findings` 后自动尝试下载 `require_files` / `asset_urls` 或 Hub 快照。如果工具结果返回 `Tool Use Error: Model asset download failed after submit_findings`，说明上一次提交的资产无法自动获取；你必须根据错误修正 `require_files` / `asset_urls`、换一个可自动下载的候选，或在确认无可用方案时提交失败总结。不要重复提交同一个失败资产组合。
 
 # Decision Policy (自适应检索决策)
 每一步都先判断“下一次工具调用能否显著降低不确定性”。不要为了完成固定流程而浪费步骤。

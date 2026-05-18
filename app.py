@@ -763,7 +763,8 @@ if user_feedback:
                                         searcher, tool_request, search_container, search_steps_limit, search_interval
                                     )
                                     if isinstance(search_result, dict):
-                                        search_result = StEnrichFindings(searcher, search_result, search_container)
+                                        if not search_result.get("findings_enriched"):
+                                            search_result = StEnrichFindings(searcher, search_result, search_container)
                                         if search_result.get("download_error"):
                                             st.warning(f"模型资产下载失败：{search_result['download_error']}")
                         break
