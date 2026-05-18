@@ -196,7 +196,8 @@ class CoderAgent(BaseAgent):
     - **禁止调优的参数类型**：`cache`、`device`、`model_dir`、字符串路径、模型ID等运行时/环境参数，必须使用常量或直接透传，不得 `trial.suggest_*`
     - 如果算子暴露了 `model_dir` 参数，它是运行时固定参数，会由系统根据算子 schema 中的 `source` / `repo_id` 元数据自动注入；除非用户明确提供自定义本地路径，否则不要在调用算子时手写 `model_dir`。
 * **库访问**：你只能使用下列库：
-    - 基础处理: `np` (numpy), `cv2` (opencv-contrib-python), `optuna`, `skimage` (scikit-image), `PIL` (pillow) 以及提供的算子库 `cv_wrappers`
+    - 基础处理: `np` (numpy), `cv2` (opencv-contrib-python), `optuna`, `skimage` (scikit-image), `PIL` (pillow), 预注入的只读 `os.path` / `os_path` 安全路径封装，以及提供的算子库 `cv_wrappers`
+    - `os.path` / `os_path` 仅允许路径字符串拼接/规范化函数（如 `join`, `normpath`, `basename`, `dirname`, `splitext`），禁止 `exists`, `isfile`, `isdir`, `realpath`, `expanduser`, `expandvars`, `getmtime`, `getsize` 等文件系统或环境探测函数
     - 深度学习:
       {learning_libraries_text}
 * **算子调用**：所有算子必须通过 `cv_wrappers.算子名(img, **params)` 的形式调用

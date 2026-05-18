@@ -1,6 +1,8 @@
 import ast
 from typing import Iterable
 
+from sandbox.safe_os_path import SAFE_OS_PATH_ATTRIBUTES, is_safe_os_path_attribute
+
 class SecurityViolation(Exception):
     """自定义安全违规异常"""
     pass
@@ -190,8 +192,22 @@ class AgentCodeChecker(ast.NodeVisitor):
         prefixes = tuple(allowed_import_prefixes or DEFAULT_ALLOWED_IMPORT_PREFIXES)
         self.allowed_import_prefixes = tuple(p.strip() for p in prefixes if str(p).strip())
         self._class_depth = 0
+        self._safe_os_aliases = {"os"}
+        self._safe_os_path_aliases = {"os_path", "safe_os_path"}
+
+    def _add_safe_os_alias(self, name: str):
+        self._safe_os_path_aliases.discard(name)
+        self._safe_os_aliases.add(name)
+
+    def _add_safe_os_path_alias(self, name: str):
+        self._safe_os_aliases.discard(name)
+        self._safe_os_path_aliases.add(name)
 
     def _check_import_target(self, module_name: str):
+        if module_name in {"os", "os.path"}:
+            return
+        if module_name.startswith("os."):
+            raise SecurityViolation(f"沙盒仅允许导入 os.path 安全封装: {module_name}")
         if not is_allowed_import_path(module_name, self.allowed_import_prefixes):
             raise SecurityViolation(f"禁止导入非白名单模块: {module_name}")
 
@@ -205,6 +221,36 @@ class AgentCodeChecker(ast.NodeVisitor):
             and isinstance(value.func, ast.Name)
             and value.func.id == "super"
         )
+
+    @staticmethod
+    def _attribute_chain(node: ast.AST) -> list[str]:
+        parts: list[str] = []
+        current = node
+        while isinstance(current, ast.Attribute):
+            parts.append(current.attr)
+            current = current.value
+        if isinstance(current, ast.Name):
+            parts.append(current.id)
+            return list(reversed(parts))
+        return []
+
+    def _check_safe_os_attribute(self, node: ast.Attribute):
+        chain = self._attribute_chain(node)
+        if not chain:
+            return
+
+        root = chain[0]
+        if root in self._safe_os_aliases:
+            if len(chain) == 2 and chain[1] == "path":
+                return
+            if len(chain) == 3 and chain[1] == "path" and is_safe_os_path_attribute(chain[2]):
+                return
+            raise SecurityViolation("沙盒 os 代理仅允许访问 os.path 的安全路径函数")
+
+        if root in self._safe_os_path_aliases:
+            if len(chain) == 2 and is_safe_os_path_attribute(chain[1]):
+                return
+            raise SecurityViolation("沙盒 os.path 代理不允许访问该属性")
 
     def visit_ClassDef(self, node):
         if node.name.startswith("__"):
@@ -226,6 +272,13 @@ class AgentCodeChecker(ast.NodeVisitor):
     def visit_Import(self, node):
         for alias in node.names:
             self._check_import_target(alias.name)
+            if alias.name == "os":
+                self._add_safe_os_alias(alias.asname or "os")
+            elif alias.name == "os.path":
+                if alias.asname:
+                    self._add_safe_os_path_alias(alias.asname)
+                else:
+                    self._add_safe_os_alias("os")
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node):
@@ -240,12 +293,19 @@ class AgentCodeChecker(ast.NodeVisitor):
                 raise SecurityViolation("禁止使用 from ... import *")
             if alias.name.startswith("__"):
                 raise SecurityViolation(f"禁止导入私有符号: {alias.name}")
+            if module_name == "os" and alias.name != "path":
+                raise SecurityViolation("沙盒 os 代理仅允许 from os import path")
+            if module_name == "os.path" and alias.name not in SAFE_OS_PATH_ATTRIBUTES:
+                raise SecurityViolation(f"禁止从 os.path 导入非安全符号: {alias.name}")
+            if module_name == "os" and alias.name == "path":
+                self._add_safe_os_path_alias(alias.asname or alias.name)
         self.generic_visit(node)
 
     def visit_Attribute(self, node):
         # 拦截：访问 __subclasses__ 等双下划线私有属性（Python 逃逸常用手段）
         if node.attr.startswith('__') and not self._is_super_init_attribute(node):
             raise SecurityViolation(f"禁止访问私有属性: {node.attr}")
+        self._check_safe_os_attribute(node)
         self.generic_visit(node)
 
     def visit_Name(self, node):

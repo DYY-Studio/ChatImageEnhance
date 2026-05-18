@@ -96,8 +96,10 @@ class ToolMakerAgent(BaseAgent):
 ## 1. 允许使用的环境与库
 - 你**只能**使用当前上下文中存在的以下库：
     - `numpy` (作为 `np`), `cv2` (opencv-contrib-python), `skimage` (scikit-image), `math`, `PIL` (pillow)。
+    - 沙盒预注入只读 `os.path` 安全封装，也可用 `os_path`；仅用于路径字符串拼接/规范化。
     - $LEARNING_LIBS$
-- 你不能导入任何其他标准库（如 `os`, `sys`, `subprocess` 等）或第三方库。
+- 你不能导入任何其他标准库（如 `sys`, `subprocess` 等）或第三方库；如需处理本地 `model_dir` 下的文件名，只能使用预注入的 `os.path` / `os_path` 安全子集。
+- `os.path` 安全子集仅包含 `join`, `normpath`, `abspath`, `dirname`, `basename`, `split`, `splitext`, `splitdrive`, `isabs`, `relpath`, `commonpath`, `commonprefix`, `normcase` 和路径分隔常量；禁止使用 `exists`, `isfile`, `isdir`, `realpath`, `expanduser`, `expandvars`, `getmtime`, `getsize` 等文件系统或环境探测函数。
 - **绝对禁止**使用 `exec`, `eval`, `open`, 以及任何带有文件系统或网络访问性质的代码。
 - $LEARNING_POLICY$
 - 系统已经设置 `HF_HOME` 和 `MODELSCOPE_CACHE`，repo-id 驱动的加载方式应优先依赖这些缓存根目录。
