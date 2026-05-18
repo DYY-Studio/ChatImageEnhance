@@ -296,6 +296,59 @@ def get_previous_img(curr_idx: int, ignore_test_mode: bool = True):
                 break
     return prev_image
 
+def _extract_used_operator_names(process_code: str) -> list[str]:
+    code = str(process_code or "")
+    found: list[tuple[int, str]] = []
+
+    for match in re.finditer(r"\bcv_wrappers\.(\w+)\s*\(", code):
+        found.append((match.start(), match.group(1)))
+
+    for tool_name in global_registry.tools:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(tool_name)):
+            continue
+        match = re.search(rf"\b{re.escape(tool_name)}\s*\(", code)
+        if match:
+            found.append((match.start(), str(tool_name)))
+
+    operators: list[str] = []
+    for _, name in sorted(found, key=lambda item: item[0]):
+        if name not in operators:
+            operators.append(name)
+    return operators
+
+def _next_user_feedback(messages: list[dict], assistant_index: int, stop_index: int) -> str:
+    for msg in messages[assistant_index + 1:stop_index]:
+        if msg.get("role") == "user":
+            return str(msg.get("content") or "").strip()
+    return ""
+
+def _build_attempt_history_summary(
+    messages: list[dict],
+    last_assistant_index: int,
+    max_entries: int = 6
+) -> str:
+    if last_assistant_index <= 0:
+        return ""
+
+    entries: list[str] = []
+    round_no = 0
+    for idx, msg in enumerate(messages[:last_assistant_index]):
+        if msg.get("role") != "assistant" or "image" not in msg or msg.get("test_mode"):
+            continue
+        round_no += 1
+        operators = _extract_used_operator_names(msg.get("process_code", ""))
+        feedback = _next_user_feedback(messages, idx, last_assistant_index)
+        operators_text = ", ".join(operators) if operators else "未检测到明确算子"
+        feedback_text = feedback if feedback else "未记录后续用户反馈"
+        entries.append(
+            f"{round_no}. 使用算子: {operators_text}\n"
+            f"   后续用户反馈: {feedback_text}"
+        )
+
+    if max_entries > 0:
+        entries = entries[-max_entries:]
+    return "\n".join(entries)
+
 def delete_message(idx: int, target_only: bool = False):
     msgs: list = st.session_state.messages
     clear_encoded_cache = False
@@ -618,16 +671,51 @@ def generate_user_prompt(
     include_evaluate: bool = False, 
     step_by_step: bool = False
 ):
-    last_assistant_msg = next(
+    messages = list(st.session_state.messages)
+    prior_messages = messages[:-1]
+    last_assistant_index = next(
         (
-            m for m in reversed(st.session_state.messages[:-1]) 
-            if m['role'] == 'assistant' and "image" in m and "test_mode" not in m
-        ), 
+            idx for idx in range(len(prior_messages) - 1, -1, -1)
+            if prior_messages[idx].get('role') == 'assistant'
+            and "image" in prior_messages[idx]
+            and "test_mode" not in prior_messages[idx]
+        ),
         None
+    )
+    last_assistant_msg = (
+        prior_messages[last_assistant_index]
+        if last_assistant_index is not None else None
     )
     
     current_iter_prompt = f""
-    if last_assistant_msg and not step_by_step:
+    if last_assistant_msg:
+        initial_user_msg = next(
+            (
+                m for m in prior_messages
+                if m.get("role") == "user" and str(m.get("content") or "").strip()
+            ),
+            None
+        )
+        if initial_user_msg:
+            current_iter_prompt += (
+                f"--- 初始用户要求 ---\n{initial_user_msg['content']}\n\n"
+            )
+
+        history_summary = _build_attempt_history_summary(
+            prior_messages,
+            last_assistant_index,
+        )
+        if history_summary:
+            current_iter_prompt += (
+                "--- 历史尝试摘要（更早轮次，仅包含算子列表和后续用户反馈） ---\n"
+                f"{history_summary}\n\n"
+            )
+
+        current_iter_prompt += (
+            "--- 本轮输入图像来源 ---\n"
+            f"{'上一轮结果图像' if step_by_step else '原始图像'}\n\n"
+        )
+
         current_iter_prompt += f"--- 上一轮执行状态/系统回复 ---\n{last_assistant_msg['content']}\n"
 
         l_params = last_assistant_msg.get("best_params", {})
@@ -641,8 +729,11 @@ def generate_user_prompt(
         if l_params:
             current_iter_prompt += f"\n--- 上一轮 Optuna 搜索到的最优参数 ---\n{l_params}\n"
 
-        current_iter_prompt += f"\n--- 本轮用户最新反馈/要求 ---\n{user_feedback}"
-        # current_iter_prompt += "\n请仅基于全局目标、上一轮的状态和本次人类的最新反馈，修改评价指标、代码或 Optuna 参数范围。"
+        current_iter_prompt += (
+            f"\n--- 本轮用户最新反馈/要求 ---\n{user_feedback}\n"
+            "\n请结合历史尝试摘要中的算子列表和用户原文反馈，自行判断是否应继续沿用、调整、切换算子，"
+            "或在现有算子不足时请求新工具。不要假设历史反馈已经被系统预先判定为正面或负面。"
+        )
     else:
         current_iter_prompt += f"--- 用户要求 ---\n{user_feedback}"
     return current_iter_prompt
