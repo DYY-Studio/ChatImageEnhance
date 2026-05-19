@@ -493,7 +493,7 @@ if hasattr(cv2, "xphoto") and hasattr(cv2, "ximgproc"):
     global_registry.register(
         name="HDR_Detail_Enhancement",
         func=safe_enhance_detail,
-        description="HDR级别细节增强。极大地提亮暗部并挖掘图像的潜在细节，适合风景、逆光、欠曝场景的提亮和清晰度拉升。",
+        description="HDR级别细节增强。挖掘图像的潜在细节，适合风景场景的清晰度拉升。亮度影响不明显。",
         params_schema={
             "sigma_s": {
                 "type": "float",
