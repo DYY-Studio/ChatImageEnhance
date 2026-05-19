@@ -79,6 +79,18 @@ class Searcher:
     # 保留权重 + 配置 + tokenizer/processor + 推理相关代码；忽略样例图、文档、测试等噪声内容。
     _MODEL_ALLOW_PATTERNS: list[str] = list(MODEL_ALLOW_PATTERNS)
     _MODEL_IGNORE_PATTERNS: list[str] = list(MODEL_IGNORE_PATTERNS)
+    _MODEL_WEIGHT_SUFFIXES: tuple[str, ...] = (
+        ".safetensors", ".bin", ".pt", ".pth", ".ckpt", ".onnx", ".tflite", ".gguf",
+        ".pb", ".engine", ".pkl",
+    )
+    _MODEL_ASSET_ARG_RE = re.compile(
+        r"\b("
+        r"model_path|model_file|model_url|checkpoint|checkpoint_path|ckpt|ckpt_path|"
+        r"weight|weights|weight_path|weights_path|pretrain(?:ed)?_path|"
+        r"onnx_path|engine_path"
+        r")\b",
+        re.IGNORECASE,
+    )
     # 常见“分发包名 != import 模块名”映射
     _PKG_IMPORT_ALIASES: dict[str, str] = {
         "pillow": "PIL",
@@ -95,6 +107,31 @@ class Searcher:
         "faiss-gpu": "faiss",
         "pytorch-lightning": "pytorch_lightning",
         "sentence-transformers": "sentence_transformers",
+    }
+    _KNOWN_RELEASE_ASSET_URLS: dict[str, dict[str, str]] = {
+        "realesrgan": {
+            "RealESRGAN_x4plus.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
+            "RealESRNet_x4plus.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.1/RealESRNet_x4plus.pth",
+            "RealESRGAN_x4plus_anime_6B.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
+            "RealESRGAN_x2plus.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth",
+            "realesr-animevideov3.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth",
+            "realesr-general-x4v3.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth",
+            "realesr-general-wdn-x4v3.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-wdn-x4v3.pth",
+        }
+    }
+    _KNOWN_ASSET_ALIASES: dict[str, dict[str, str]] = {
+        "realesrgan": {
+            "realesrgan_x4plus": "RealESRGAN_x4plus.pth",
+            "realesrnet_x4plus": "RealESRNet_x4plus.pth",
+            "realesrgan_x4plus_anime_6b": "RealESRGAN_x4plus_anime_6B.pth",
+            "realesrgan_x2plus": "RealESRGAN_x2plus.pth",
+            "realesr-animevideov3": "realesr-animevideov3.pth",
+            "realesr-general-x4v3": "realesr-general-x4v3.pth",
+            "realesr-general-wdn-x4v3": "realesr-general-wdn-x4v3.pth",
+        }
+    }
+    _KNOWN_ASSET_LOADER_PATTERNS: dict[str, re.Pattern] = {
+        "realesrgan": re.compile(r"\bRealESRGANer\b|\brealesrgan\b|Real-ESRGAN", re.IGNORECASE),
     }
 
     def __init__(self, 
@@ -298,6 +335,188 @@ class Searcher:
                 "filename": cls._safe_asset_filename(filename)
             })
         return normalized
+
+    @staticmethod
+    def _findings_text(findings: dict) -> str:
+        return "\n".join(
+            str(findings.get(key) or "")
+            for key in ("code_snippets", "summary")
+        )
+
+    @classmethod
+    def _find_direct_model_asset_urls(cls, text: str) -> list[dict[str, str]]:
+        urls: list[str] = []
+        for raw_url in re.findall(r"https://[^\s'\"<>`]+", text):
+            url = raw_url.rstrip(".,;:)]}'\"")
+            parsed = urlparse(url)
+            filename = unquote(Path(parsed.path).name)
+            if filename.lower().endswith(cls._MODEL_WEIGHT_SUFFIXES):
+                urls.append(url)
+        return cls._normalize_asset_urls(urls)
+
+    @classmethod
+    def _extract_model_file_references(cls, text: str) -> list[str]:
+        suffix_re = "|".join(re.escape(suffix) for suffix in cls._MODEL_WEIGHT_SUFFIXES)
+        url_masked_text = re.sub(r"https://[^\s'\"<>`]+", " ", text)
+
+        candidates: list[str] = []
+        try:
+            import ast
+            ast_tree = ast.parse(text)
+            candidates.extend(
+                node.value
+                for node in ast.walk(ast_tree)
+                if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            )
+        except SyntaxError:
+            pass
+
+        candidates.extend(
+            match.group(1)
+            for match in re.finditer(rf"['\"]([^'\"]+(?:{suffix_re}))['\"]", text, re.IGNORECASE)
+        )
+        candidates.extend(
+            match.group(1)
+            for match in re.finditer(
+                rf"(?<![A-Za-z0-9_.:/-])([A-Za-z0-9_@+=#.,/\\-]+(?:{suffix_re}))(?![A-Za-z0-9_.-])",
+                url_masked_text,
+                re.IGNORECASE,
+            )
+        )
+
+        refs: list[str] = []
+        seen: set[str] = set()
+        for value in candidates:
+            token = str(value or "").replace("\\", "/").strip().strip(".,;:)]}'\"")
+            if not token or "://" in token or not token.lower().endswith(cls._MODEL_WEIGHT_SUFFIXES):
+                continue
+            token = token.strip("/")
+            if ".." in token.split("/"):
+                continue
+            if token not in seen:
+                refs.append(token)
+                seen.add(token)
+        return refs
+
+    @classmethod
+    def _known_asset_keys(cls, findings: dict, dependencies: list[str]) -> list[str]:
+        dependency_names = {
+            cls._canonical_dist_name(cls._extract_dist_name(dep))
+            for dep in dependencies
+        }
+        text = cls._findings_text(findings)
+        keys: list[str] = []
+        for key, pattern in cls._KNOWN_ASSET_LOADER_PATTERNS.items():
+            if key in dependency_names or pattern.search(text):
+                keys.append(key)
+        return keys
+
+    @classmethod
+    def _find_known_release_assets(cls, text: str, known_keys: list[str]) -> list[dict[str, str]]:
+        found: list[dict[str, str]] = []
+        seen_filenames: set[str] = set()
+        for key in known_keys:
+            urls = cls._KNOWN_RELEASE_ASSET_URLS.get(key, {})
+            aliases = cls._KNOWN_ASSET_ALIASES.get(key, {})
+            for filename, url in urls.items():
+                stem = Path(filename).stem
+                if re.search(rf"(?<![A-Za-z0-9_-]){re.escape(stem)}(?:\.pth)?(?![A-Za-z0-9_-])", text, re.IGNORECASE):
+                    found.append({"url": url, "filename": filename})
+                    seen_filenames.add(filename)
+
+            for url in cls._find_direct_model_asset_urls(text):
+                filename = cls._safe_asset_filename(url.get("filename") or "")
+                known = aliases.get(Path(filename).stem.lower(), filename)
+                if known in urls and known not in seen_filenames:
+                    found.append({"url": urls[known], "filename": known})
+                    seen_filenames.add(known)
+
+        return found
+
+    @classmethod
+    def _augment_submitted_model_assets(
+        cls,
+        findings: dict,
+        dependencies: list[str],
+        asset_urls: list[dict[str, str]]
+    ) -> list[dict[str, str]]:
+        text = cls._findings_text(findings)
+        inferred = cls._find_direct_model_asset_urls(text)
+        inferred.extend(cls._find_known_release_assets(text, cls._known_asset_keys(findings, dependencies)))
+        if not inferred:
+            return asset_urls
+
+        augmented = list(asset_urls)
+        seen_urls = {str(asset.get("url") or "") for asset in augmented}
+        seen_names = {str(asset.get("filename") or "") for asset in augmented}
+        for asset in inferred:
+            url = str(asset.get("url") or "")
+            filename = str(asset.get("filename") or "")
+            if url and url not in seen_urls and filename not in seen_names:
+                augmented.append(asset)
+                seen_urls.add(url)
+                seen_names.add(filename)
+        return augmented
+
+    @classmethod
+    def _missing_model_asset_error(
+        cls,
+        findings: dict,
+        dependencies: list[str],
+        require_files: list[str],
+        asset_urls: list[dict[str, str]]
+    ) -> dict | None:
+        source = str(findings.get("source") or "").strip().lower()
+        repo_id = str(findings.get("repo_id") or "").strip()
+        if source in {"huggingface", "modelscope"} and repo_id and not require_files:
+            return None
+
+        text = cls._findings_text(findings)
+        local_refs = cls._extract_model_file_references(text)
+        bound_names = {
+            cls._safe_asset_filename(Path(path.replace("\\", "/")).name)
+            for path in require_files
+        }
+        bound_names.update(
+            cls._safe_asset_filename(asset.get("filename") or "")
+            for asset in asset_urls
+        )
+        unbound_refs = [
+            ref for ref in local_refs
+            if cls._safe_asset_filename(Path(ref).name) not in bound_names
+        ]
+        if unbound_refs:
+            message = (
+                "Submitted code references local model asset(s) that are not declared in "
+                "require_files or asset_urls. GitHub/no-source submissions do not get an implicit "
+                "Hub snapshot, and runtime code cannot download assets. Add repository files to "
+                "require_files, add direct HTTPS weight links to asset_urls, or switch to a "
+                "Hugging Face/ModelScope repo-id loader."
+            )
+            return {
+                "message": message,
+                "stage": "missing_model_asset",
+                "error_type": "MissingModelAsset",
+                "unbound_model_files": unbound_refs,
+                "known_loaders": cls._known_asset_keys(findings, dependencies),
+            }
+
+        known_keys = cls._known_asset_keys(findings, dependencies)
+        if known_keys and not require_files and not asset_urls and cls._MODEL_ASSET_ARG_RE.search(text):
+            message = (
+                "Submitted code uses model path/checkpoint loader arguments but declares no model assets. "
+                "Do not assume a third-party library will download weights at runtime; bind the required "
+                "files through require_files or asset_urls, or use a Hub snapshot loader."
+            )
+            return {
+                "message": message,
+                "stage": "missing_model_asset",
+                "error_type": "MissingModelAsset",
+                "unbound_model_files": [],
+                "known_loaders": known_keys,
+            }
+
+        return None
 
     @staticmethod
     def _get_repo_cache_dir(source: str, repo_id: str) -> Path:
@@ -659,6 +878,7 @@ class Searcher:
         repo_id = str(enriched.get("repo_id") or "").strip()
         require_files = self._normalize_require_files(enriched.get("require_files"))
         asset_urls = self._normalize_asset_urls(enriched.get("asset_urls"))
+        asset_urls = self._augment_submitted_model_assets(enriched, deps, asset_urls)
 
         enriched["downloaded_files"] = []
         enriched["download_dir"] = None
@@ -686,6 +906,34 @@ class Searcher:
                 "error_type": "SourceDisabled",
                 "error": enriched["download_error"],
                 "message": enriched["download_error"],
+            }
+            return enriched
+
+        missing_asset_error = self._missing_model_asset_error(
+            enriched,
+            deps,
+            require_files,
+            asset_urls
+        )
+        if missing_asset_error:
+            message = str(missing_asset_error.get("message") or "Missing model asset")
+            enriched["download_error"] = message
+            enriched["download_error_info"] = {
+                "source": source,
+                "repo_id": repo_id,
+                "failed_file": None,
+                "failed_url": None,
+                "failed_filename": None,
+                "stage": missing_asset_error.get("stage") or "missing_model_asset",
+                "submitted_require_files": require_files,
+                "submitted_asset_urls": asset_urls,
+                "require_files": require_files,
+                "asset_urls": asset_urls,
+                "unbound_model_files": missing_asset_error.get("unbound_model_files", []),
+                "known_loaders": missing_asset_error.get("known_loaders", []),
+                "error_type": missing_asset_error.get("error_type") or "MissingModelAsset",
+                "error": message,
+                "message": message,
             }
             return enriched
 
