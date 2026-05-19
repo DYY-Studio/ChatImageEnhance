@@ -453,16 +453,15 @@ def build_export_script_for_message(messages: list[dict], current_index: int) ->
             "input_source": step_msg.get("input_source", "original"),
         })
 
-    used_functions = {}
     all_step_code = "\n\n".join(step_codes)
     matches = re.findall(r"(?:cv_wrappers)\.(\w+)\s*\(", all_step_code)
 
     if matches:
         logger.info(f"检测到的函数调用: {set(matches)}")
     else:
-        logger.info("未检测到任何 cv_wrappers/skimage_wrappers 调用")
+        logger.info("未检测到任何 cv_wrappers 调用")
 
-    extract_funcs(matches, used_functions)
+    used_functions = extract_funcs(matches)
     logger.info(f"最终 used_functions 包含的函数: {list(used_functions.keys())}")
 
     wrapper_class_code = ""
@@ -600,7 +599,8 @@ def delete_message(idx: int, target_only: bool = False):
         get_encoded_img.clear()
 
 @st.cache_resource()
-def extract_funcs(matches: list[str], used_functions: dict):
+def extract_funcs(matches: list[str]):
+    used_functions = dict()
     for called_func_name in set(matches):  # 去重
         logger.info(f"正在处理函数: {called_func_name}")
         
@@ -624,6 +624,8 @@ def extract_funcs(matches: list[str], used_functions: dict):
                 logger.info(f"-> ❌ 源码提取失败，跳过")
         else:
             logger.info(f"-> 不在注册表映射中")
+
+    return used_functions
 
 def render_message_content(msg, index: int):
     """提取内部渲染逻辑，供历史记录与最新消息复用"""
