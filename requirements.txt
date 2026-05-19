@@ -11,6 +11,9 @@ PyGithub
 RestrictedPython
 
 modelscope
+addict
+datasets
+
 torch
 torchvision
 transformers
