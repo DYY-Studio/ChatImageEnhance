@@ -16,6 +16,8 @@ class Evaluator:
     """
     基于弱参考的图像质量评估器。
     """
+    _LPIPS_MAX_SIDE: int = 512    # LPIPS 输入最长边限制（全分辨率计算，显存消耗大）
+    _CLIP_MAX_SIDE: int = 1024    # CLIP/Aesthetic 输入最长边限制（preprocess 会再缩到 224/336）
     def __init__(self, 
         original_img: np.ndarray, 
         model_cache: dict[str, Any] | None = None, 
@@ -67,12 +69,22 @@ class Evaluator:
     #     深度学习辅助转换
     # =========================
     
+    @staticmethod
+    def _resize_if_needed(img: np.ndarray, max_side: int) -> np.ndarray:
+        """如果图像最长边超过 max_side，等比缩放到 max_side。"""
+        h, w = img.shape[:2]
+        if max(h, w) <= max_side:
+            return img
+        scale = max_side / max(h, w)
+        return cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+
     def _bgr_to_pil(self, img: np.ndarray) -> Image.Image:
         """将 OpenCV 的 BGR 格式安全转换为 PIL RGB 格式"""
         return Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
     def _bgr_to_tensor_lpips(self, img: np.ndarray) -> torch.Tensor:
-        """将 BGR 格式转换为 LPIPS 需要的范围 [-1, 1] 的 RGB Tensor"""
+        """将 BGR 格式转换为 LPIPS 需要的范围 [-1, 1] 的 RGB Tensor，自动限制最长边防止 OOM"""
+        img = self._resize_if_needed(img, self._LPIPS_MAX_SIDE)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         tensor = torch.from_numpy(rgb).float() / 255.0
         tensor = tensor * 2.0 - 1.0
@@ -386,7 +398,7 @@ class Evaluator:
             preprocess = clip_bundle["preprocess"]
             tokenizer = clip_bundle["tokenizer"]
 
-            pil_img = self._bgr_to_pil(img)
+            pil_img = self._bgr_to_pil(self._resize_if_needed(img, self._CLIP_MAX_SIDE))
             image_input = preprocess(pil_img).unsqueeze(0).to(self.device)
             text_input = tokenizer([text_prompt]).to(self.device)
 
@@ -437,7 +449,7 @@ class Evaluator:
             
             mlp = self.model_cache[aes_key]
 
-            pil_img = self._bgr_to_pil(img)
+            pil_img = self._bgr_to_pil(self._resize_if_needed(img, self._CLIP_MAX_SIDE))
             image_input = preprocess(pil_img).unsqueeze(0).to(self.device)
 
             with torch.no_grad():
