@@ -51,6 +51,10 @@ def safe_zero_dce(img: np.ndarray, cache: dict | None = None, device: str = 'cpu
         return result_array
     except Exception as e:
         raise RuntimeError(f"ZeroDCE failed: {str(e)}")
+
+    finally:
+        if 'img_lowres_tensor' in locals(): del img_lowres_tensor
+        if 'param_tensor' in locals(): del param_tensor
     
 from models.SCI import SCIRuntime
 def safe_sci_enhance(
@@ -204,17 +208,6 @@ def safe_ia3dlut_retouch(
 ):
     calc_size: int = 512
     try:
-        h_high, w_high = img.shape[:2]
-        scale = min(calc_size / h_high, calc_size / w_high)
-        
-        if scale < 1.0:
-            new_w, new_h = int(w_high * scale), int(h_high * scale)
-            img_lowres = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
-        else:
-            img_lowres = img.copy()
-
-        input_tensor = torch.from_numpy(img_lowres / 255.0).float().permute(2, 0, 1).unsqueeze(0).to(device)
-
         model = cache.get("ia3dlut_model") if cache is not None else None
         if model is None:
             model = load_adaptive_lut_model(
@@ -232,10 +225,6 @@ def safe_ia3dlut_retouch(
         import traceback
         traceback.print_exc()
         raise RuntimeError(f"Image Adaptive processing failed: {str(e)}")
-
-    finally:
-        if 'input_tensor' in locals(): del input_tensor
-        if 'img_lowres' in locals(): del img_lowres
 
 from modelscope.pipelines import pipeline
 from modelscope.utils.constant import Tasks
@@ -288,6 +277,10 @@ def _modelscope_img_pipeline(
         image_pipeline = cache.get(cache_key, None) if cache is not None else None
         cached_device = str(getattr(image_pipeline, "device_name", "")).lower()
         if image_pipeline is not None and cached_device != modelscope_device:
+            # 设备变更: 显式从缓存中移除旧 pipeline 以释放其占用的显存
+            if cache is not None:
+                cache.pop(cache_key, None)
+            del image_pipeline
             image_pipeline = None
 
         if image_pipeline is None:

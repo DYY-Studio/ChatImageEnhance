@@ -106,9 +106,13 @@ def render_playground(container: DeltaGenerator | None = None):
                         if 'cache' in params_try:
                             params_try['cache'].clear()
                         if 'device' in params_try:
-                            if (device_module := getattr(torch, params_try['device'].lower(), False)):
-                                if (empty_cache := getattr(device_module, 'empty_cache', False)):
-                                    empty_cache()
+                            device_name = params_try['device'].lower().split(':')[0]
+                            if (device_module := getattr(torch, device_name, None)):
+                                if (empty_cache := getattr(device_module, 'empty_cache', None)):
+                                    try:
+                                        empty_cache()
+                                    except Exception:
+                                        pass
                         gc.collect()
                     except Exception as e:
                         st.error(str(e))

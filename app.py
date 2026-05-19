@@ -169,22 +169,55 @@ def get_allowed_search_sources(
         return ("github",)
     return ("github", "huggingface", "modelscope")
 
+def _detect_device_type(obj) -> str | None:
+    """尝试从各种缓存对象中推断设备类型，容错处理。"""
+    try:
+        # nn.Module: 直接取 parameters
+        if hasattr(obj, 'parameters'):
+            param = next(obj.parameters(), None)
+            if param is not None:
+                return param.device.type
+        # dict 形式: 可能含 'model' 或其他 nn.Module 值
+        if isinstance(obj, dict):
+            for v in obj.values():
+                if hasattr(v, 'parameters'):
+                    param = next(v.parameters(), None)
+                    if param is not None:
+                        return param.device.type
+        # pipeline 对象: 可能有 device / device_name 属性
+        device_attr = getattr(obj, 'device', None) or getattr(obj, 'device_name', None)
+        if device_attr is not None:
+            device_str = str(device_attr).strip().lower()
+            if device_str and device_str != 'cpu':
+                return device_str.split(':')[0]
+    except Exception:
+        pass
+    return None
+
 def unload_models():
-    devices = set([
-        (
-            next(model_cache['model'].parameters()).device.type
-            if isinstance(model_cache, dict)
-            else next(model_cache.parameters()).device.type
-        )
-        for model_cache in get_model_cache().values()
-    ])
-    get_model_cache().clear()
-    for device in devices:
-        if device != 'cpu':
-            if (device_module := getattr(torch, device, False)):
-                if (empty_cache := getattr(device_module, 'empty_cache', False)):
-                    empty_cache()
+    cache = get_model_cache()
+    devices = set()
+    for value in cache.values():
+        device_type = _detect_device_type(value)
+        if device_type and device_type != 'cpu':
+            devices.add(device_type)
+    cache.clear()
     gc.collect()
+    for device in devices:
+        if (device_module := getattr(torch, device, None)):
+            if (empty_cache := getattr(device_module, 'empty_cache', None)):
+                try:
+                    empty_cache()
+                except Exception:
+                    pass
+    # 兜底: 始终尝试清理 CUDA/MPS/XPU
+    for backend in ('cuda', 'mps', 'xpu'):
+        try:
+            mod = getattr(torch, backend, None)
+            if mod and hasattr(mod, 'empty_cache'):
+                mod.empty_cache()
+        except Exception:
+            pass
 
 with st.sidebar:
     st.header("设置")
@@ -530,6 +563,13 @@ else:
     st.session_state.messages.clear()
     st.session_state['best_bgr'] = None
     st.session_state['img_bgr'] = None
+    # 显式清理 Evaluator 持有的 GPU 资源
+    evaluator = st.session_state.get('evaluator')
+    if evaluator is not None and hasattr(evaluator, 'cleanup'):
+        try:
+            evaluator.cleanup()
+        except Exception:
+            pass
     st.session_state['evaluator'] = None
     load_bgr_img_from_file.clear()
     get_thumbnail_img.clear()

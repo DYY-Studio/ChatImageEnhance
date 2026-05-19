@@ -1,10 +1,12 @@
 import optuna
 import numpy as np
+import gc
 import logging
 import re
 import traceback
 
 from sandbox.executor import SandboxExecutor
+from sandbox.runtime_dependencies import RuntimeDependencyManager
 from typing import Iterable, Callable
 from collections import deque
 from optuna.trial import TrialState
@@ -18,6 +20,24 @@ class BayesianOptimizer:
     def __init__(self, executor: SandboxExecutor):
         self.executor = executor
         self.study = optuna.create_study(direction="maximize")
+
+    @staticmethod
+    def _cleanup_unicache(unicache: dict):
+        """释放 unicache 中残留的深度学习模型和 Tensor，防止 GPU 显存泄漏。"""
+        if not unicache:
+            return
+        # 跳过运行时元数据 key
+        runtime_keys = {k for k in unicache if k.startswith('__runtime')}
+        for key in list(unicache.keys()):
+            if key in runtime_keys:
+                continue
+            try:
+                del unicache[key]
+            except Exception:
+                pass
+        unicache.clear()
+        gc.collect()
+        RuntimeDependencyManager.release_device_memory()
 
     def _has_trial(self, code_str: str):
         return re.search(r"\w+?\.suggest_(int|float|categorical|(?:discrete_|log)?uniform)", code_str) is not None
@@ -56,7 +76,7 @@ class BayesianOptimizer:
 
         if not self._has_trial(code_str):
             try:
-                return {
+                result = {
                     "best_score": None,
                     "best_params": None,
                     "best_img": self.executor.execute_pipeline_direct(
@@ -64,7 +84,10 @@ class BayesianOptimizer:
                     ),
                     "n_trials_used": 0
                 }
+                self._cleanup_unicache(unicache)
+                return result
             except Exception:
+                self._cleanup_unicache(unicache)
                 return {
                     "best_score": None,
                     "best_params": None,
@@ -89,7 +112,7 @@ class BayesianOptimizer:
             }
         
         try:
-            return {
+            result = {
                 "best_score": study.best_value,
                 "best_params": study.best_params,
                 "best_img": self.executor.execute_pipeline_direct(
@@ -98,8 +121,11 @@ class BayesianOptimizer:
                 # ===== [新增] 返回实际使用的trial数 =====
                 "n_trials_used": n_trials_used
             }
+            self._cleanup_unicache(unicache)
+            return result
         except:
             last_error = traceback.format_exc()
+            self._cleanup_unicache(unicache)
             return {
                 "best_score": None,
                 "best_params": None,
@@ -156,7 +182,7 @@ class BayesianOptimizer:
         # 如果代码中没有 trial 可搜索的内容，则只执行一遍就返回
         if not self._has_trial(code_str):
             try:
-                return {
+                result = {
                     "best_score": None,
                     "best_params": None,
                     "best_img": self.executor.execute_pipeline_direct(
@@ -164,7 +190,10 @@ class BayesianOptimizer:
                     ),
                     "n_trials_used": 0
                 }
+                self._cleanup_unicache(unicache)
+                return result
             except Exception:
+                self._cleanup_unicache(unicache)
                 return {
                     "best_score": None,
                     "best_params": None,
@@ -190,7 +219,7 @@ class BayesianOptimizer:
             }
         
         try:
-            return {
+            result = {
                 "best_score": study.best_value,
                 "best_params": study.best_params,
                 "best_img": self.executor.execute_pipeline_direct(
@@ -199,8 +228,11 @@ class BayesianOptimizer:
                 # ===== [新增] 返回实际使用的trial数 =====
                 "n_trials_used": n_trials_used
             }
+            self._cleanup_unicache(unicache)
+            return result
         except:
             last_error = traceback.format_exc()
+            self._cleanup_unicache(unicache)
             return {
                 "best_score": None,
                 "best_params": None,
