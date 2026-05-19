@@ -179,6 +179,86 @@ def _collect_export_process_chain(messages: list[dict], current_index: int) -> l
 
     return list(reversed(chain))
 
+def _params_lookup_source(param_name: str) -> str:
+    escaped = param_name.replace("\\", "\\\\").replace('"', '\\"')
+    return f'params["{escaped}"]'
+
+def _trial_suggest_param_name(call: ast.Call) -> str | None:
+    if not isinstance(call.func, ast.Attribute):
+        return None
+    if not call.func.attr.startswith("suggest_"):
+        return None
+    if not isinstance(call.func.value, ast.Name) or call.func.value.id != "trial":
+        return None
+
+    if call.args:
+        first_arg = call.args[0]
+        if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
+            return first_arg.value
+
+    for keyword in call.keywords:
+        if keyword.arg in {"name", "param_name"} and isinstance(keyword.value, ast.Constant):
+            if isinstance(keyword.value.value, str):
+                return keyword.value.value
+    return None
+
+def _replace_ast_source_segments(source: str, replacements: list[tuple[ast.AST, str]]) -> str:
+    if not replacements:
+        return source
+
+    line_offsets: list[int] = []
+    current_offset = 0
+    for line in source.splitlines(keepends=True):
+        line_offsets.append(current_offset)
+        current_offset += len(line.encode("utf-8"))
+    if not line_offsets:
+        line_offsets.append(0)
+
+    source_bytes = source.encode("utf-8")
+    ranges: list[tuple[int, int, bytes]] = []
+    for node, replacement in replacements:
+        lineno = getattr(node, "lineno", None)
+        col_offset = getattr(node, "col_offset", None)
+        end_lineno = getattr(node, "end_lineno", None)
+        end_col_offset = getattr(node, "end_col_offset", None)
+        if None in {lineno, col_offset, end_lineno, end_col_offset}:
+            continue
+        if lineno < 1 or end_lineno < 1:
+            continue
+        if lineno > len(line_offsets) or end_lineno > len(line_offsets):
+            continue
+
+        start = line_offsets[lineno - 1] + col_offset
+        end = line_offsets[end_lineno - 1] + end_col_offset
+        if 0 <= start <= end <= len(source_bytes):
+            ranges.append((start, end, replacement.encode("utf-8")))
+
+    if not ranges:
+        return source
+
+    for start, end, replacement in sorted(ranges, key=lambda item: item[0], reverse=True):
+        source_bytes = source_bytes[:start] + replacement + source_bytes[end:]
+    return source_bytes.decode("utf-8")
+
+def _replace_trial_suggest_calls(source: str) -> str:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return re.sub(
+            r"trial\.suggest_[a-zA-Z_]+\(\s*[\"']([a-zA-Z0-9_]+)[\"'][\s\S]*?\)",
+            lambda match: _params_lookup_source(match.group(1)),
+            source,
+        )
+
+    replacements: list[tuple[ast.AST, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        param_name = _trial_suggest_param_name(node)
+        if param_name is not None:
+            replacements.append((node, _params_lookup_source(param_name)))
+    return _replace_ast_source_segments(source, replacements)
+
 def _process_code_to_export_step(process_code: str, function_name: str) -> str:
     cleaned_code = _strip_markdown_code_fence(process_code)
 
@@ -210,16 +290,7 @@ def _process_code_to_export_step(process_code: str, function_name: str) -> str:
         final_func_code = cleaned_code
 
     final_func_code = re.sub(r"\s*trial\s*=\s*.*?\n", "\n", final_func_code)
-
-    def replace_trial_suggest(match):
-        param_name = match.group(1)
-        return f'params["{param_name}"]'
-
-    return re.sub(
-        r"trial\.suggest_[a-zA-Z_]+\([\"']([a-zA-Z0-9_]+)[\"'][^)]*\)",
-        replace_trial_suggest,
-        final_func_code,
-    )
+    return _replace_trial_suggest_calls(final_func_code)
 
 _EXPORT_IMPORT_PACKAGES = {
     "cv2": "opencv-contrib-python",
