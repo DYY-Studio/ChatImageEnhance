@@ -13,6 +13,7 @@ RestrictedPython
 modelscope
 addict
 datasets
+simplejson
 
 torch
 torchvision

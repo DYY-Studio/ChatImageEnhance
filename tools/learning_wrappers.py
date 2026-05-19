@@ -241,6 +241,38 @@ from modelscope.pipelines import pipeline
 from modelscope.utils.constant import Tasks
 from modelscope.outputs import OutputKeys
 from core.model_assets import MODEL_IGNORE_PATTERNS
+
+def _sync_modelscope_pipeline_device(image_pipeline):
+    pipeline_device = getattr(image_pipeline, "device", None)
+    if pipeline_device is not None and hasattr(image_pipeline, "_device"):
+        image_pipeline._device = pipeline_device
+
+
+def _normalize_modelscope_device(device: str) -> str:
+    normalized = str(device or "cpu").strip().lower()
+    if normalized in {"cpu", "cuda", "gpu"}:
+        return normalized
+    if normalized.startswith("cuda:") or normalized.startswith("gpu:"):
+        return normalized
+    return "cpu"
+
+
+def _modelscope_output_to_bgr(output_img: np.ndarray, output_color_space: str) -> np.ndarray:
+    result = np.asarray(output_img)
+    color_space = str(output_color_space or "bgr").strip().lower()
+
+    if color_space == "bgr":
+        return result.copy()
+    if color_space == "rgb":
+        if result.ndim == 3 and result.shape[2] == 4:
+            return cv2.cvtColor(result, cv2.COLOR_RGBA2BGRA)
+        if result.ndim == 3 and result.shape[2] == 3:
+            return cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
+        return result.copy()
+
+    raise ValueError(f"Unsupported ModelScope output color space: {output_color_space}")
+
+
 def _modelscope_img_pipeline(
     img: np.ndarray,
     model_name: str,
@@ -249,16 +281,21 @@ def _modelscope_img_pipeline(
     caller_name: str,
     cache: dict | None = None,
     device: str = 'cpu',
-    cvt_output_color: bool = True
+    output_color_space: str = 'bgr'
 ):
     try:
+        modelscope_device = _normalize_modelscope_device(device)
         image_pipeline = cache.get(cache_key, None) if cache is not None else None
+        cached_device = str(getattr(image_pipeline, "device_name", "")).lower()
+        if image_pipeline is not None and cached_device != modelscope_device:
+            image_pipeline = None
+
         if image_pipeline is None:
             try:
                 image_pipeline = pipeline(
                     pipeline_task, 
                     model_name,
-                    device=device,
+                    device=modelscope_device,
                     ignore_file_pattern=list(MODEL_IGNORE_PATTERNS)
                 )
             except Exception:
@@ -270,15 +307,17 @@ def _modelscope_img_pipeline(
                 )
         if cache is not None:
             cache[cache_key] = image_pipeline
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        result_rgb = image_pipeline(img_rgb)[OutputKeys.OUTPUT_IMG]
-        result = cv2.cvtColor(result_rgb, cv2.COLOR_RGB2BGR) if cvt_output_color else result_rgb.copy()
+        _sync_modelscope_pipeline_device(image_pipeline)
+
+        img_bgr = np.ascontiguousarray(img)
+        result_img = image_pipeline(img_bgr)[OutputKeys.OUTPUT_IMG]
+        result = _modelscope_output_to_bgr(result_img, output_color_space)
         return result
     except Exception as e:
         raise RuntimeError(f'{caller_name} failed: {str(e)}')
     finally:
-        if 'img_rgb' in locals(): del img_rgb
-        if 'result_rgb' in locals(): del result_rgb
+        if 'img_bgr' in locals(): del img_bgr
+        if 'result_img' in locals(): del result_img
 
 def safe_nafnet_denoise(
     img: np.ndarray, 
@@ -333,7 +372,7 @@ def safe_uhdm_demoireing(
     return _modelscope_img_pipeline(
         img=img, model_name=model_name, cache_key=cache_key,
         pipeline_task=pipeline_task, caller_name='UHDM demoireing',
-        cache=cache, device=device, cvt_output_color=False
+        cache=cache, device=device, output_color_space='rgb'
     )
 
 def safe_csrnet_color_enhance(
