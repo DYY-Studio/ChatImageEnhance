@@ -105,21 +105,25 @@ def load_adaptive_lut_model(model_dir: str, dim=33, device='cpu'):
     return model
 
 def apply_lut_to_image(ori_img_rgb: np.ndarray, input_tensor: torch.Tensor, model, device='cpu'):
-    # 2. 获取模型生成的专属 3D LUT
-    with torch.inference_mode():
-        fused_lut = model(input_tensor) # 形状: [3, 33, 33, 33]
+    fused_lut = None
+    try:
+        # 2. 获取模型生成的专属 3D LUT
+        with torch.inference_mode():
+            fused_lut = model(input_tensor) # 形状: [3, 33, 33, 33]
 
-    lut_numpy = fused_lut.permute(1, 2, 3, 0).cpu().numpy()
-    
-    # 限制范围在 0~1 之间
-    lut_numpy = np.clip(lut_numpy, 0.0, 1.0) 
-    
-    lut_flat = lut_numpy.flatten().tolist() 
-    
-    dim = model.dim
-    pillow_lut = ImageFilter.Color3DLUT(dim, lut_flat)
+        lut_numpy = fused_lut.permute(1, 2, 3, 0).cpu().numpy()
+        
+        # 限制范围在 0~1 之间
+        lut_numpy = np.clip(lut_numpy, 0.0, 1.0) 
+        
+        lut_flat = lut_numpy.flatten().tolist() 
+        
+        dim = model.dim
+        pillow_lut = ImageFilter.Color3DLUT(dim, lut_flat)
 
-    ori_img_pil = Image.fromarray(ori_img_rgb)
-    result_pil = ori_img_pil.filter(pillow_lut)
-    
-    return np.array(result_pil)
+        ori_img_pil = Image.fromarray(ori_img_rgb)
+        result_pil = ori_img_pil.filter(pillow_lut)
+        
+        return np.array(result_pil)
+    finally:
+        del fused_lut

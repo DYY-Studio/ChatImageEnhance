@@ -99,6 +99,7 @@ def safe_sci_enhance(
     finally:
         if 'input_tensor' in locals(): del input_tensor
         if 'enhanced_tensor' in locals(): del enhanced_tensor
+        if 'result_tensor' in locals(): del result_tensor
 
 from models.FFDNet import FFDNet
 def safe_ffdnet_denoise(
@@ -147,6 +148,8 @@ def safe_ffdnet_denoise(
     finally:
         if 'input_tensor' in locals(): del input_tensor
         if 'enhanced_tensor' in locals(): del enhanced_tensor
+        if 'sigma_tensor' in locals(): del sigma_tensor
+        if 'result_tensor' in locals(): del result_tensor
 
 from models.SepLUT import SepLUTGenerator, apply_lut1d_opencv, apply_lut3d_pil
 def safe_seplut_retouch(
@@ -199,6 +202,8 @@ def safe_seplut_retouch(
     finally:
         if 'input_tensor' in locals(): del input_tensor
         if 'img_lowres' in locals(): del img_lowres
+        if 'enhanced_1d_lut' in locals(): del enhanced_1d_lut
+        if 'enhanced_3d_lut' in locals(): del enhanced_3d_lut
 
 from models.ImageAdaptive3DLUT import apply_lut_to_image, load_adaptive_lut_model
 def safe_ia3dlut_retouch(
@@ -240,10 +245,20 @@ def safe_ia3dlut_retouch(
         if 'input_tensor' in locals(): del input_tensor
         if 'img_lowres' in locals(): del img_lowres
 
-from modelscope.pipelines import pipeline
-from modelscope.utils.constant import Tasks
-from modelscope.outputs import OutputKeys
 from core.model_assets import MODEL_IGNORE_PATTERNS
+
+def _load_modelscope_pipeline_symbols():
+    from modelscope.outputs import OutputKeys
+    from modelscope.pipelines import pipeline
+
+    return pipeline, OutputKeys
+
+
+def _modelscope_task(name: str):
+    from modelscope.utils.constant import Tasks
+
+    return getattr(Tasks, name)
+
 
 def _sync_modelscope_pipeline_device(image_pipeline):
     pipeline_device = getattr(image_pipeline, "device", None)
@@ -287,6 +302,7 @@ def _modelscope_img_pipeline(
     output_color_space: str = 'bgr'
 ):
     try:
+        pipeline, OutputKeys = _load_modelscope_pipeline_symbols()
         modelscope_device = _normalize_modelscope_device(device)
         image_pipeline = cache.get(cache_key, None) if cache is not None else None
         cached_device = str(getattr(image_pipeline, "device_name", "")).lower()
@@ -333,7 +349,7 @@ def safe_nafnet_denoise(
 ):
     model_name = 'iic/cv_nafnet_image-denoise_sidd'
     cache_key = 'nafnet_denoise_pipeline'
-    pipeline_task = Tasks.image_denoising
+    pipeline_task = _modelscope_task('image_denoising')
     return _modelscope_img_pipeline(
         img=img, model_name=model_name, cache_key=cache_key,
         pipeline_task=pipeline_task, caller_name='NAFNet denoise',
@@ -347,7 +363,7 @@ def safe_nafnet_demotionblur(
 ):
     model_name = 'iic/cv_nafnet_image-deblur_gopro'
     cache_key = 'nafnet_deblur_pipeline'
-    pipeline_task = Tasks.image_deblurring
+    pipeline_task = _modelscope_task('image_deblurring')
     return _modelscope_img_pipeline(
         img=img, model_name=model_name, cache_key=cache_key,
         pipeline_task=pipeline_task, caller_name='NAFNet demotionblur',
@@ -361,7 +377,7 @@ def safe_nafnet_demotionblur_and_compress(
 ):
     model_name = 'iic/cv_nafnet_image-deblur_reds'
     cache_key = 'nafnet_deblur_compress_compressed_pipeline'
-    pipeline_task = Tasks.image_deblurring
+    pipeline_task = _modelscope_task('image_deblurring')
     return _modelscope_img_pipeline(
         img=img, model_name=model_name, cache_key=cache_key,
         pipeline_task=pipeline_task, caller_name='NAFNet demotionblur and compress',
@@ -375,7 +391,7 @@ def safe_uhdm_demoireing(
 ):
     model_name = 'iic/cv_uhdm_image-demoireing'
     cache_key = 'uhdm_image_demoireing_pipeline'
-    pipeline_task = Tasks.image_demoireing
+    pipeline_task = _modelscope_task('image_demoireing')
     return _modelscope_img_pipeline(
         img=img, model_name=model_name, cache_key=cache_key,
         pipeline_task=pipeline_task, caller_name='UHDM demoireing',
@@ -428,3 +444,4 @@ def safe_csrnet_color_enhance(
     finally:
         if 'input_tensor' in locals(): del input_tensor
         if 'enhanced_tensor' in locals(): del enhanced_tensor
+        if 'result_tensor' in locals(): del result_tensor

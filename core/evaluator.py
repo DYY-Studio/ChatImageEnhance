@@ -324,13 +324,16 @@ class Evaluator:
         """
         计算 LPIPS 感知相似度。值越低代表感知上越相似。
         """
-        # 计算并返回分数
-        img1 = self._align_images(self.original_img, img)
-        img1 = self._bgr_to_tensor_lpips(img1)
-        
-        with torch.no_grad():
-            score = self._load_lpips(net)(self.base_lpips_tensor, img1).item()
-        return 1.0 - np.clip(float(score), 0.0, 1.0)
+        img1 = None
+        try:
+            img_aligned = self._align_images(self.original_img, img)
+            img1 = self._bgr_to_tensor_lpips(img_aligned)
+            
+            with torch.no_grad():
+                score = self._load_lpips(net)(self.base_lpips_tensor, img1).item()
+            return 1.0 - np.clip(float(score), 0.0, 1.0)
+        finally:
+            del img1
     
     def _load_clip(self, 
         cache_prefix: str = 'clip', 
@@ -375,25 +378,30 @@ class Evaluator:
         计算图像与文本提示的 CLIP 余弦相似度。值越高代表越符合文本描述。
         支持动态切换 CLIP 模型。
         """
-        clip_bundle = self._load_clip('clip', model_name, pretrained)
-        model = clip_bundle["model"]
-        preprocess = clip_bundle["preprocess"]
-        tokenizer = clip_bundle["tokenizer"]
+        image_input = None
+        text_input = None
+        try:
+            clip_bundle = self._load_clip('clip', model_name, pretrained)
+            model = clip_bundle["model"]
+            preprocess = clip_bundle["preprocess"]
+            tokenizer = clip_bundle["tokenizer"]
 
-        pil_img = self._bgr_to_pil(img)
-        image_input = preprocess(pil_img).unsqueeze(0).to(self.device)
-        text_input = tokenizer([text_prompt]).to(self.device)
+            pil_img = self._bgr_to_pil(img)
+            image_input = preprocess(pil_img).unsqueeze(0).to(self.device)
+            text_input = tokenizer([text_prompt]).to(self.device)
 
-        with torch.no_grad():
-            image_features = model.encode_image(image_input)
-            text_features = model.encode_text(text_input)
-            
-            # 归一化后算余弦相似度
-            image_features /= image_features.norm(dim=-1, keepdim=True)
-            text_features /= text_features.norm(dim=-1, keepdim=True)
-            similarity = (image_features @ text_features.T).item()
-            
-        return float(similarity)
+            with torch.no_grad():
+                image_features = model.encode_image(image_input)
+                text_features = model.encode_text(text_input)
+                
+                # 归一化后算余弦相似度
+                image_features /= image_features.norm(dim=-1, keepdim=True)
+                text_features /= text_features.norm(dim=-1, keepdim=True)
+                similarity = (image_features @ text_features.T).item()
+                
+            return float(similarity)
+        finally:
+            del image_input, text_input
 
     def compute_aesthetic_score(self, 
         img: np.ndarray, 
@@ -405,37 +413,41 @@ class Evaluator:
         计算图像的无参考美学评分 (通常在 1-10 之间)。越高越好。
         注：官方权重库通常基于 ViT-L-14 提取特征，请确保 weight_path 路径正确。
         """
-        # 美学打分器需要前置的 CLIP 模型来提取特征
+        image_input = None
+        try:
+            # 美学打分器需要前置的 CLIP 模型来提取特征
 
-        clip_bundle = self._load_clip('aesthetic_clip', model_name, pretrained)
-        model, preprocess = clip_bundle["model"], clip_bundle["preprocess"]
+            clip_bundle = self._load_clip('aesthetic_clip', model_name, pretrained)
+            model, preprocess = clip_bundle["model"], clip_bundle["preprocess"]
 
-        aes_key = f"aesthetic_mlp_{model_name}"
-        if aes_key not in self.model_cache:
-            embed_dim = model.visual.output_dim
-            mlp = AestheticMLP(embed_dim).to(self.device)
-            try:
-                # 需提前下载官方权重包到本地路径
-                mlp.load_state_dict(torch.load(
-                    str(get_executable_dir() / "models" / weight_path), 
-                    map_location=self.device
-                ))
-            except FileNotFoundError:
-                print(f"[警告] 美学模型权重 {weight_path} 未找到，返回 0.0")
-                return 0.0
-            self.model_cache[aes_key] = mlp.eval()
-        
-        mlp = self.model_cache[aes_key]
-
-        pil_img = self._bgr_to_pil(img)
-        image_input = preprocess(pil_img).unsqueeze(0).to(self.device)
-
-        with torch.no_grad():
-            image_features = model.encode_image(image_input)
-            image_features /= image_features.norm(dim=-1, keepdim=True)
-            score = mlp(image_features).item()
+            aes_key = f"aesthetic_mlp_{model_name}"
+            if aes_key not in self.model_cache:
+                embed_dim = model.visual.output_dim
+                mlp = AestheticMLP(embed_dim).to(self.device)
+                try:
+                    # 需提前下载官方权重包到本地路径
+                    mlp.load_state_dict(torch.load(
+                        str(get_executable_dir() / "models" / weight_path), 
+                        map_location=self.device
+                    ))
+                except FileNotFoundError:
+                    print(f"[警告] 美学模型权重 {weight_path} 未找到，返回 0.0")
+                    return 0.0
+                self.model_cache[aes_key] = mlp.eval()
             
-        return float(score)
+            mlp = self.model_cache[aes_key]
+
+            pil_img = self._bgr_to_pil(img)
+            image_input = preprocess(pil_img).unsqueeze(0).to(self.device)
+
+            with torch.no_grad():
+                image_features = model.encode_image(image_input)
+                image_features /= image_features.norm(dim=-1, keepdim=True)
+                score = mlp(image_features).item()
+                
+            return float(score)
+        finally:
+            del image_input
     
     def preload_models(self,
         model_name: str = 'ViT-L-14',  # ViT-B-32
