@@ -448,6 +448,41 @@ class Evaluator:
         else:
             self._load_clip('aesthetic_clip', 'ViT-L-14', l14_pretrained)
         self._load_lpips()
+
+    def cleanup(self):
+        """显式释放 Evaluator 持有的 GPU Tensor 和评估模型缓存。"""
+        import gc
+
+        device_str = str(self.device).split(':')[0] if self.device else None
+
+        # 释放 GPU 上的基准 tensor
+        if hasattr(self, 'base_lpips_tensor') and self.base_lpips_tensor is not None:
+            del self.base_lpips_tensor
+            self.base_lpips_tensor = None
+
+        # 清理 model_cache 中本 Evaluator 放入的评估模型
+        eval_prefixes = ('lpips_', 'clip_', 'aesthetic_clip_', 'aesthetic_mlp_')
+        keys_to_remove = [
+            k for k in list(self.model_cache.keys())
+            if any(k.startswith(prefix) for prefix in eval_prefixes)
+        ]
+        for k in keys_to_remove:
+            del self.model_cache[k]
+
+        # 释放原图引用
+        self.original_img = None
+        self.gray_original = None
+
+        gc.collect()
+
+        # 释放设备显存
+        if device_str and device_str != 'cpu':
+            try:
+                device_module = getattr(torch, device_str, None)
+                if device_module and hasattr(device_module, 'empty_cache'):
+                    device_module.empty_cache()
+            except Exception:
+                pass
     
     def _generate_profile(self) -> dict:
         """
