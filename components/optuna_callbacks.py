@@ -183,7 +183,7 @@ class StOptunaCallbackImg:
 
         # 更新最佳图像（如果有）
         best_img_bgr = None
-        while not self.best_queue:
+        while self.best_queue:
             best_img_bgr = self.best_queue.popleft()
         if best_img_bgr is not None:
             # 如果有上一轮的图片，则使用增强的对比组件
