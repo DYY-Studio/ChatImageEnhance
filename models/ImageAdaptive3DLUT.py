@@ -104,16 +104,10 @@ def load_adaptive_lut_model(model_dir: str, dim=33, device='cpu'):
     model.eval()
     return model
 
-def apply_lut_to_image(img_rgb: np.ndarray, model, device='cpu'):
-    # 1. 加载图像并准备模型输入
-    img_pil = Image.fromarray(img_rgb)
-    
-    # 转为 Tensor 供模型推断权重 (Pillow Image -> Tensor)
-    img_tensor = TF.to_tensor(img_pil).unsqueeze(0).to(device)
-    
+def apply_lut_to_image(ori_img_rgb: np.ndarray, input_tensor: torch.Tensor, model, device='cpu'):
     # 2. 获取模型生成的专属 3D LUT
     with torch.inference_mode():
-        fused_lut = model(img_tensor) # 形状: [3, 33, 33, 33]
+        fused_lut = model(input_tensor) # 形状: [3, 33, 33, 33]
 
     lut_numpy = fused_lut.permute(1, 2, 3, 0).cpu().numpy()
     
@@ -124,7 +118,8 @@ def apply_lut_to_image(img_rgb: np.ndarray, model, device='cpu'):
     
     dim = model.dim
     pillow_lut = ImageFilter.Color3DLUT(dim, lut_flat)
-    
-    result_pil = img_pil.filter(pillow_lut)
+
+    ori_img_pil = Image.fromarray(ori_img_rgb)
+    result_pil = ori_img_pil.filter(pillow_lut)
     
     return np.array(result_pil)
