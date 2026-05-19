@@ -208,16 +208,27 @@ def safe_ia3dlut_retouch(
 ):
     calc_size: int = 512
     try:
+        h_high, w_high = img.shape[:2]
+        scale = min(calc_size / h_high, calc_size / w_high)
+        
+        if scale < 1.0:
+            new_w, new_h = int(w_high * scale), int(h_high * scale)
+            img_lowres = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        else:
+            img_lowres = img.copy()
+
+        input_tensor = torch.from_numpy(img_lowres / 255.0).float().permute(2, 0, 1).unsqueeze(0).to(device)
+
         model = cache.get("ia3dlut_model") if cache is not None else None
         if model is None:
             model = load_adaptive_lut_model(
                 str(get_executable_dir() / "models"),
                 device=device
             )
-            
+
             if cache is not None: cache["ia3dlut_model"] = model
 
-        result_rgb = apply_lut_to_image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), model, device)
+        result_rgb = apply_lut_to_image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), input_tensor, model, device)
         result = cv2.cvtColor(result_rgb, cv2.COLOR_RGB2BGR)
 
         return result
@@ -225,6 +236,9 @@ def safe_ia3dlut_retouch(
         import traceback
         traceback.print_exc()
         raise RuntimeError(f"Image Adaptive processing failed: {str(e)}")
+    finally:
+        if 'input_tensor' in locals(): del input_tensor
+        if 'img_lowres' in locals(): del img_lowres
 
 from modelscope.pipelines import pipeline
 from modelscope.utils.constant import Tasks
