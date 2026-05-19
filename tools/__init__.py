@@ -716,7 +716,7 @@ global_registry.register(
     params_schema={
         "noise_level": {
             "type": "float",
-            "range": [0.0, 50.0],
+            "range": [0.0, 75.0],
             "description": "降噪强度"
         },
         "cache": {
@@ -786,7 +786,9 @@ global_registry.register(
     name="NAFNet_Denoise",
     func=safe_nafnet_denoise,
     description=(
-        "基于深度学习的中量级降噪模型。"
+        "基于深度学习的中量级盲降噪模型。"
+        "基于SIDD智能手机图像降噪数据集。"
+        "训练集外的噪声情况（如过高、过于混乱）会导致算子失效。"
         "网络架构在CPU上执行非常慢。"
         "运算速度较慢，但是内存/显存占用不高，可以用于大分辨率图像。"
     ),
