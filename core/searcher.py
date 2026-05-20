@@ -354,23 +354,49 @@ class Searcher:
                 urls.append(url)
         return cls._normalize_asset_urls(urls)
 
+    @staticmethod
+    def _filename_template_pattern(template: str) -> re.Pattern | None:
+        name = Path(str(template or "").replace("\\", "/")).name.strip()
+        if "{" not in name or "}" not in name:
+            return None
+
+        parts: list[str] = []
+        cursor = 0
+        for match in re.finditer(r"\{[^{}]+\}", name):
+            parts.append(re.escape(name[cursor:match.start()]))
+            parts.append(r"[A-Za-z0-9_.#@+=-]+")
+            cursor = match.end()
+        parts.append(re.escape(name[cursor:]))
+        return re.compile("^" + "".join(parts) + "$", re.IGNORECASE)
+
+    @staticmethod
+    def _is_template_reference(ref: str) -> bool:
+        return "{" in str(ref or "") and "}" in str(ref or "")
+
+    @classmethod
+    def _template_matches_bound_name(cls, ref: str, bound_names: set[str]) -> bool:
+        pattern = cls._filename_template_pattern(ref)
+        return bool(pattern and any(pattern.match(name) for name in bound_names))
+
+    @staticmethod
+    def _extract_template_strings(text: str) -> list[str]:
+        templates: list[str] = []
+        seen: set[str] = set()
+        for match in re.finditer(r"(?:[fFrR]{0,2})(['\"])(.*?)\1", text, re.DOTALL):
+            value = match.group(2)
+            if "{" not in value or "}" not in value:
+                continue
+            if value not in seen:
+                templates.append(value)
+                seen.add(value)
+        return templates
+
     @classmethod
     def _extract_model_file_references(cls, text: str) -> list[str]:
         suffix_re = "|".join(re.escape(suffix) for suffix in cls._MODEL_WEIGHT_SUFFIXES)
         url_masked_text = re.sub(r"https://[^\s'\"<>`]+", " ", text)
 
         candidates: list[str] = []
-        try:
-            import ast
-            ast_tree = ast.parse(text)
-            candidates.extend(
-                node.value
-                for node in ast.walk(ast_tree)
-                if isinstance(node, ast.Constant) and isinstance(node.value, str)
-            )
-        except SyntaxError:
-            pass
-
         candidates.extend(
             match.group(1)
             for match in re.finditer(rf"['\"]([^'\"]+(?:{suffix_re}))['\"]", text, re.IGNORECASE)
@@ -378,7 +404,7 @@ class Searcher:
         candidates.extend(
             match.group(1)
             for match in re.finditer(
-                rf"(?<![A-Za-z0-9_.:/-])([A-Za-z0-9_@+=#.,/\\-]+(?:{suffix_re}))(?![A-Za-z0-9_.-])",
+                rf"(?<![A-Za-z0-9_.:/{{}}-])([A-Za-z0-9_@+=#.,/\\-]+(?:{suffix_re}))(?![A-Za-z0-9_.-])",
                 url_masked_text,
                 re.IGNORECASE,
             )
@@ -423,6 +449,18 @@ class Searcher:
                 if re.search(rf"(?<![A-Za-z0-9_-]){re.escape(stem)}(?:\.pth)?(?![A-Za-z0-9_-])", text, re.IGNORECASE):
                     found.append({"url": url, "filename": filename})
                     seen_filenames.add(filename)
+
+            for template in cls._extract_template_strings(text):
+                pattern = cls._filename_template_pattern(template)
+                if pattern is None:
+                    continue
+                for filename, url in urls.items():
+                    stem = Path(filename).stem
+                    if filename in seen_filenames:
+                        continue
+                    if pattern.match(filename) or pattern.match(stem):
+                        found.append({"url": url, "filename": filename})
+                        seen_filenames.add(filename)
 
             for url in cls._find_direct_model_asset_urls(text):
                 filename = cls._safe_asset_filename(url.get("filename") or "")
@@ -484,6 +522,10 @@ class Searcher:
         unbound_refs = [
             ref for ref in local_refs
             if cls._safe_asset_filename(Path(ref).name) not in bound_names
+            and not (
+                cls._is_template_reference(ref)
+                and cls._template_matches_bound_name(ref, bound_names)
+            )
         ]
         if unbound_refs:
             message = (
