@@ -295,7 +295,7 @@ def process(img: np.ndarray, trial: optuna.Trial, cache: dict) -> np.ndarray:
 {{
     "status": "NEED_NEW_TOOL",
     "tool_name": "safe_crt_scanline_effect",
-    "description": "需要一个算子来模拟CRT电视效果。增加水平方向的黑色扫描线；产生微小的RGB通道错位(色差)。"
+    "description": "需要一个算子来模拟CRT电视效果。增加水平方向的黑色扫描线；产生微小的RGB通道错位(色差)。" // 严禁在此处指出具体的实现算法，可能会误导SearcherAgent的搜寻方向
 }}
 ```
         """

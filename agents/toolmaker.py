@@ -110,6 +110,7 @@ class ToolMakerAgent(BaseAgent):
 - 对 Hugging Face / ModelScope 的标准 repo-id 接口，不要暴露 `model_dir`，应在函数内部使用固定 `repo_id` 常量并启用 `local_files_only=True`。
 - 只有当模型加载必须依赖本地文件夹或文件路径时，才暴露 `model_dir: str = ''`，例如：自定义 `torch.load(model_dir + '/xxx.pth')`、ONNX/权重文件、GitHub 资产、或必须以本地目录作为 `from_pretrained(model_dir)` 输入的仓库快照。
 - 如果检索附加信息列出了“已下载的外部资产文件”，这些文件位于运行时注入的 `model_dir` 下；代码应按文件名相对 `model_dir` 读取，禁止假设权重已在当前工作目录。
+- 如果使用第三方推理库且它要求 `model_path`、`checkpoint_path`、`weights_path`、`onnx_path` 等参数，必须指向已下载到 `model_dir` 下的文件（如 `os.path.join(model_dir, "model.pth")`）。禁止传入裸模型名、`weights/...` 这类未绑定路径或 HTTPS URL 触发库内部联网下载。
 - 禁止在推理时隐式联网下载；不要硬编码 Hugging Face / ModelScope 缓存路径。
 
 ## 2. 算子签名与规范

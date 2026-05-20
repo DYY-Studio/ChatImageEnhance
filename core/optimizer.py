@@ -103,6 +103,7 @@ class BayesianOptimizer:
         n_trials_used = len(study.trials)
         completed_trials = [trial for trial in study.trials if trial.state == TrialState.COMPLETE]
         if not completed_trials:
+            self._cleanup_unicache(unicache)
             return {
                 "best_score": None,
                 "best_params": None,
@@ -210,6 +211,7 @@ class BayesianOptimizer:
         logger.info(f"实际使用 trial 数: {n_trials_used} / {n_trials}")
         completed_trials = [trial for trial in study.trials if trial.state == TrialState.COMPLETE]
         if not completed_trials:
+            self._cleanup_unicache(unicache)
             return {
                 "best_score": None,
                 "best_params": None,

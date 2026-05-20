@@ -379,6 +379,13 @@ class Orchestrator:
 
             # 尝试做一次空跑验证语法
             try:
+                # 释放旧 Evaluator 的 GPU 资源（如重试时）
+                if hasattr(self, 'evaluator') and self.evaluator is not None:
+                    if hasattr(self.evaluator, 'cleanup'):
+                        try:
+                            self.evaluator.cleanup()
+                        except Exception:
+                            pass
                 self.evaluator = Evaluator(img_to_eval, model_cache, device)
                 self.executor.prepare_evaluate_code(code_str, self.evaluator)
                 self.executor.execute_evaluate(code_str, img_to_eval, self.evaluator)

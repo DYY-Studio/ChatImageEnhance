@@ -384,6 +384,7 @@ submit_findings(
   - `source`: 这个项目来自哪个源，可以填写`github`, `huggingface`或`modelscope`
   - `require_files`: 需要下载的文件路径列表（如权重、配置、tokenizer、processor）。GitHub 传统算法场景通常留空即可（留空不会下载任何文件）；HF/ModelScope 留空会触发来源默认下载策略。
   - `asset_urls`: 需要额外下载的直链资产 URL 列表，适用于“GitHub 代码 + Release 权重文件”等跨来源场景。只能填写可由程序直接 HTTPS 下载的文件链接，不要填写网盘、网页说明页或需要人工操作的链接。
+    - 通用权重规则：只要最终代码需要给第三方库或自定义加载器传入 `model_path`、`checkpoint_path`、`weights_path`、`onnx_path` 等本地权重/模型文件路径，就必须用 `require_files` 或 `asset_urls` 声明这些文件。不要假设 pip 包会自带权重，也不要依赖库在运行时隐式联网下载。
 * 失败时不需要传入任何params，（可选）或可以传入`summary`解释原因。
 * 系统会在 `submit_findings` 后自动尝试下载 `require_files` / `asset_urls` 或 Hub 快照。如果工具结果返回 `Tool Use Error: Model asset download failed after submit_findings`，说明上一次提交的资产无法自动获取；你必须根据错误修正 `require_files` / `asset_urls`、换一个可自动下载的候选，或在确认无可用方案时提交失败总结。不要重复提交同一个失败资产组合。
 
@@ -459,6 +460,7 @@ submit_findings(
 11. **最小下载优先:** 对于 GitHub / HuggingFace / ModelScope，优先提交最小 `require_files`，避免整仓下载。
     - 常见必需文件包括：权重文件、配置文件、tokenizer/processor 文件、推理必须脚本。
     - 若权重在 GitHub Release 或项目 README 给出了可直接下载的 HTTPS 文件链接，必须放入 `asset_urls`，不要假设本地已有权重。
+    - 若推理代码引用 `.safetensors`、`.bin`、`.pt`、`.pth`、`.ckpt`、`.onnx`、`.tflite`、`.gguf` 等模型文件，必须确认它来自 Hub 快照、`require_files` 或 `asset_urls` 三者之一。
     - 若 HF/ModelScope 模型结构复杂且标准快照下载更可靠，`require_files` 可以留空并在 `summary` 中说明原因。
 12. **权重可获得性优先:** 不要选择需要人工登录网页、网盘提取码、论坛下载、失效链接或 Git LFS 手动拉取的深度学习项目。可通过官方 Hub API 下载的候选优先级最高。
 13. **错误处理:** 遇到网络或 API 错误等无法修复的问题，直接提交“未找到”，并在 `summary` 字段说明。

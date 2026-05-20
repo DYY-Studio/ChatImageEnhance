@@ -30,6 +30,20 @@ class RuntimeDependencyManager:
         "opencv-python-headless",
         "opencv-contrib-python-headless",
     )
+    _BINARY_ONLY_PACKAGES = (
+        "numpy",
+        "h5py",
+        "scipy",
+        "pandas",
+        "pyarrow",
+        "opencv-python",
+        "opencv-contrib-python",
+        "opencv-python-headless",
+        "opencv-contrib-python-headless",
+        "torch",
+        "torchvision",
+        "onnxruntime",
+    )
     _PKG_IMPORT_ALIASES = {
         "pillow": "PIL",
         "opencv-python": "cv2",
@@ -517,7 +531,15 @@ class RuntimeDependencyManager:
         constraint_path: str | None = None,
         no_deps: bool = False
     ) -> list[str]:
-        command = [sys.executable, "-m", "pip", "install"]
+        command = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--prefer-binary",
+            "--only-binary",
+            ",".join(cls._BINARY_ONLY_PACKAGES),
+        ]
         if no_deps:
             command.append("--no-deps")
         elif constraint_path:
