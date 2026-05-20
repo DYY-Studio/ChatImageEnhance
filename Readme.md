@@ -1,7 +1,7 @@
 # AutoImageEnhance
 一个实验性多Agents系统
 
-由自然语言描述生成自动调优的传统CV图像处理管线
+由自然语言描述生成自动调优的CV图像处理管线
 
 ## 特色
 * 高度兼容的调用机制，兼容任何OpenAI兼容API端点
@@ -19,6 +19,8 @@
   * 没有命令行执行
 * 无费用的联网搜索
   * 通过 GitHub REST API 实现代码检索
+  * 通过 HuggingFace API, ModelScope API 实现深度学习模型查询
+  * 通过 DuckDuckGo / Bing 实现简易网页检索
 * 可扩展性
   * 支持添加自定义算子
   * 支持LLM自动算子编写
@@ -43,6 +45,9 @@ streamlit run app.py
 
 ## TODO
 * 使用RAG保存算子描述，简化注入的算子数
+* 优化深度学习模型的生命周期控制，解决内存泄漏问题
+* 提高在受限环境搜索深度学习模型的成功率
+* 优化LLM选择搜索关键词的准确度
 
 ## 架构描述
 
@@ -95,6 +100,7 @@ AutoImageEnhance/
 │   ├── orchestrator.py         # 主控调度器：管理 LLM 与 Optuna 的双循环机制
 │   ├── evaluator.py            # 图像质量评估器：定义基本图像质量评估指标
 │   ├── searcher.py             # 代码检索器：封装代码检索流程
+│   ├── model_assets.py         # 模型过滤器常量
 │   └── optimizer.py            # 贝叶斯优化器：封装 Optuna 逻辑
 │
 ├── agents/                     # 大模型 Agent 层
@@ -102,7 +108,7 @@ AutoImageEnhance/
 │   ├── base_agent.py           # 基础 Agent 类 (封装 LLM API 调用)
 │   ├── planner.py              # 规划者：分析图像，给出图像可改进的内容，并给用户推荐提示词
 │   ├── evaluator.py            # 评估者：将提示词转化为适用于 Optuna Study 的奖励函数
-│   ├── seacher.py              # 检索者：利用GitHub REST API检索相关的代码实现
+│   ├── seacher.py              # 检索者：利用 GitHub REST API / HF API / ModelScope API 或 DuckDuckGo / Bing 检索相关的代码实现和模型
 │   ├── toolmaker.py            # 工具编写者：按编码者的需求和检索者收集到的信息编写工具
 │   └── coder.py                # 编码者：将提示词转化为带有 Optuna trial 的 Python 代码
 │
@@ -110,19 +116,29 @@ AutoImageEnhance/
 │   ├── __init__.py             # 全局算子注册
 │   ├── cv_wrappers.py          # 经过防呆处理的 OpenCV 封装函数库
 │   ├── skimage_wrappers.py     # 经过防呆处理的 scikit-image 封装函数库
+│   ├── learning_wrappers.py    # 经过防呆处理的深度学习封装库
 │   └── registry.py             # 算子注册表：动态将 cv_wrappers 导出为 LLM 可读的 JSON Schema
 │
 ├── sandbox/                    # 运行时与沙盒环境
 │   ├── __init__.py
 │   ├── code_checker.py         # AST代码安全检查
+│   ├── runtime_dependencies.py # 动态依赖解析安装器
+│   ├── safe_os_path.py         # 安全os.path封装
 │   └── executor.py             # 动态代码安全执行器 (负责 exec 运行 LLM 生成的代码)
 │
 ├── memory/                     # 记忆与经验库
 │   ├── __init__.py
 │   └── experience_db.py        # 封装 ChromaDB
 │
-├── utils/                      # 通用工具
-│   └── __init__.py             
+├── models/                     # 内置深度学习模型
+│   ├── AestheticScorePredictor.py # CLIP+MLP 美学分数预测
+│   ├── FFDNet.py
+│   ├── ImageAdaptive3DLUT.py
+│   ├── SCI.py
+│   ├── SepLUT.py
+│   └── ZeroDCE.py              # ZeroDCE++，修改为输出LUT，由CPU套用
+│
+├── utils.py                    # 通用工具            
 │
 └── requirements.txt            # 项目依赖
 ```
