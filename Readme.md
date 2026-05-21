@@ -1,4 +1,4 @@
-# AutoImageEnhance
+# ChatImageEnhance
 一个实验性多Agents系统
 
 由自然语言描述生成自动调优的CV图像处理管线
