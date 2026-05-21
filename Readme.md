@@ -51,12 +51,11 @@ streamlit run app.py
 
 ## 架构描述
 
-### 五大Agent
-#### PlannerAgent
-* （视觉模型）负责根据图像内容和客观量化参数分析图像存在的问题，并给用户给出推荐的优化方向和建议提示词
-
+### 四大Agent
 #### EvaluatorAgent
 * 负责将用户的自然语言输入转换为评价代码用于本轮本地Optuna调优
+* 结合历史聊天信息和evaluate函数对新一轮评价进行调节，使其符合用户的修改方向
+* 运行错误时自动传递信息并重试
   ```python
   def evaluate(img: np.ndarray) -> float:
     pass
@@ -65,25 +64,30 @@ streamlit run app.py
 #### CoderAgent
 * 输入：自然语言输入，评价代码
 * 根据用户的自然语言输入，参考评价代码，编写可运行的图像处理管线函数
+* 结合历史聊天信息和process函数对新一轮处理采用的算子进行调节，使其符合用户的修改方向
+* 运行错误时自动传递信息并重试
   ```python
-  def process(img: np.ndarray, trial: optuna.Trial) -> np.ndarray:
+  def process(img: np.ndarray, trial: optuna.Trial, cache: dict) -> np.ndarray:
     pass
   ```
 
 #### SearcherAgent
 * 输入：缺少的工具的描述
-* 根据缺少的工具的描述，利用 GitHub REST API 搜索相关代码
+* 根据缺少的工具的描述，利用 GitHub REST API / HF API / ModelScope API 搜索相关代码或模型
+* 在用户限制的Step内利用提供的工具确定目标代码和使用方式，需要多轮重复调用LLM，要求至少32K上下文
+* 返回简要的函数算法和调用方式，需要新增的依赖项目，以及需要下载的资源
 
 #### ToolMakerAgent
 * 输入：缺少的工具的描述，相关代码
-* 根据输入信息编写健壮的图像处理工具
+* 根据输入信息编写健壮的图像处理工具，运行代码测试保证可用
+* 本地测试报告失败时进行重试
 
 ## 运行方式
-1. 用户输入图像和自然语言描述（或使用PlannerAgent生成提示词）
+1. 用户输入图像和自然语言描述（或使用Planner生成提示词）
 2. EvaluatorAgent根据用户的自然语言输入编写评价函数，指导本轮Optuna调优
 3. CoderAgent根据用户的自然语言输入编写主处理管线。
    1. CoderAgent发现本地工具无法完成任务，发起工具编写请求
-   2. SearcherAgent根据要求搜索GitHub，寻找相关代码
+   2. SearcherAgent根据要求多步检索，寻找相关代码
    3. ToolMakerAgent根据要求和相关代码，编写健壮的工具
 4. 用户检查结果是否符合预期，输入下一步操作的自然语言描述
 5. 回到第一步
